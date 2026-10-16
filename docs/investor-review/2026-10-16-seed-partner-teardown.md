@@ -236,7 +236,7 @@ Payback is counted from signing; add 4–6 months of sales cycle for payback fro
 | APCM only, 900, at 35% | 164 | $50,633 | 31% | $931 | 30 | 2.8 | 179 | 259 |
 | APCM only, 900, 2-physician practice | 78 | $24,085 | 31% | $251 | 82 | 0.8 | 665 | 928 |
 | APCM only, 900, sold through a channel ($6k CAC, 15% of fee to channel) | 118 | $30,742 | 19% | $108 | 135 | 0.4 | 1,542 | 1,966 |
-| APCM only, 900, fee cut to $22 by competition | 118 | $29,469 | 15% | $2 | never | <0 | n/a | — |
+| APCM only, 900, fee cut to $22 by competition | 118 | $29,469 | 15% | $2 | never | <0 | n/a | n/a |
 
 Worked example, APCM at 900 per RN, 25% enrollment: nurse $10,267 ÷ 900 = $11.41; supervision $14,000 ÷ 8 ÷ 900 = $1.94; AI $1.00; ops assistant $0.90; infrastructure $0.50; after-hours $0.75; insurance $0.40; re-consent $0.86; total $17.76. Margin per patient $25.65 − $17.76 = $7.89. Per practice 117.5 × $7.89 = $927, minus $344 account management = **$583 a month** at steady state (the table shows $560 because ramp months are included in the average). Acquisition $12,000 + $5,500 = $17,500. Recovered over a 2-month setup and a 10-month ramp, payback lands at month 42.
 
