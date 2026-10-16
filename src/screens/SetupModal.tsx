@@ -1,9 +1,41 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
+import { TriangleAlert } from 'lucide-react';
 import { defaultSetupFor, READING_ORDER, RULE_ORDER } from '../../shared/codes';
 import { DEFAULT_TARGETS, READINGS, RULES } from '../../shared/rules';
 import type { Program, ReadingType, RuleCode, Targets } from '../../shared/types';
+import { ToneBadge } from '@/components/app/badges';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Field, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useStore } from '../store';
-import { Modal } from '../ui';
+
+/** A checkbox with its label, plus an optional small suffix. */
+function CheckRow({ id, checked, onToggle, children, suffix }: { id: string; checked: boolean; onToggle: () => void; children: ReactNode; suffix?: ReactNode }) {
+  return (
+    <label htmlFor={id} className="flex cursor-pointer items-center gap-2 py-0.5 text-sm">
+      <Checkbox id={id} checked={checked} onCheckedChange={onToggle} />
+      <span>{children}</span>
+      {suffix}
+    </label>
+  );
+}
+
+/** One inline row of target inputs under a ticked reading. */
+function TargetRow({ children }: { children: ReactNode }) {
+  return <div className="flex flex-wrap items-center gap-1.5 pb-1 pl-6 text-xs text-muted-foreground">{children}</div>;
+}
+
+const NUM = 'h-7 w-16 px-2 text-sm text-foreground tabular-nums md:text-sm';
+
+/** Focus the dialog itself on open, so the first code chip's tooltip does not pop up. */
+function focusDialog(e: Event) {
+  e.preventDefault();
+  (e.currentTarget as HTMLElement | null)?.focus();
+}
 
 export function SetupModal({ patientId, onClose }: { patientId: number; onClose: () => void }) {
   const { state, act } = useStore();
@@ -33,93 +65,203 @@ export function SetupModal({ patientId, onClose }: { patientId: number; onClose:
     if (r.ok) onClose();
   }
 
+  const target = (r: ReadingType) => {
+    switch (r) {
+      case 'bp':
+        return (
+          <TargetRow>
+            Target below
+            <Input
+              type="number"
+              aria-label="Systolic target"
+              className={NUM}
+              value={targets.bp.sysMax}
+              onChange={(e) => setTargets({ ...targets, bp: { ...targets.bp, sysMax: Number(e.target.value) } })}
+            />
+            /
+            <Input
+              type="number"
+              aria-label="Diastolic target"
+              className={NUM}
+              value={targets.bp.diaMax}
+              onChange={(e) => setTargets({ ...targets, bp: { ...targets.bp, diaMax: Number(e.target.value) } })}
+            />
+          </TargetRow>
+        );
+      case 'glucose':
+        return (
+          <TargetRow>
+            Target
+            <Input
+              type="number"
+              aria-label="Glucose minimum"
+              className={NUM}
+              value={targets.glucose.min}
+              onChange={(e) => setTargets({ ...targets, glucose: { ...targets.glucose, min: Number(e.target.value) } })}
+            />
+            –
+            <Input
+              type="number"
+              aria-label="Glucose maximum"
+              className={NUM}
+              value={targets.glucose.max}
+              onChange={(e) => setTargets({ ...targets, glucose: { ...targets.glucose, max: Number(e.target.value) } })}
+            />
+            mg/dL
+          </TargetRow>
+        );
+      case 'weight':
+        return (
+          <TargetRow>
+            Dry weight
+            <Input
+              type="number"
+              aria-label="Dry weight"
+              className={NUM}
+              value={targets.weight.baseline ?? ''}
+              onChange={(e) => setTargets({ ...targets, weight: { ...targets.weight, baseline: num(e.target.value) } })}
+            />
+            lb, flag a gain of
+            <Input
+              type="number"
+              aria-label="Weight gain limit"
+              className={NUM}
+              value={targets.weight.maxGain}
+              onChange={(e) => setTargets({ ...targets, weight: { ...targets.weight, maxGain: Number(e.target.value) } })}
+            />
+            lb
+          </TargetRow>
+        );
+      case 'oxygen':
+        return (
+          <TargetRow>
+            At least
+            <Input
+              type="number"
+              aria-label="Oxygen minimum"
+              className={NUM}
+              value={targets.oxygen.min}
+              onChange={(e) => setTargets({ ...targets, oxygen: { min: Number(e.target.value) } })}
+            />
+            %
+          </TargetRow>
+        );
+    }
+  };
+
   return (
-    <Modal title={`Call setup — ${p.name}`} onClose={onClose} wide>
-      <p className="muted small">Prefilled from the qualifying conditions: {p.codes.map((c) => `${c.code} ${c.name}`).join('; ')}.</p>
-      <fieldset className="field">
-        <legend>Program</legend>
-        <label className={`choice ${program === 'ccm' ? 'on' : ''}`}>
-          <input type="radio" name="program" checked={program === 'ccm'} onChange={() => setProgram('ccm')} />
-          <span>
-            <strong>CCM (99490)</strong> — the nurse makes the monthly call; billed only with 20 real staff minutes in the month.
-          </span>
-        </label>
-        <label className={`choice ${program === 'apcm' ? 'on' : ''}`}>
-          <input type="radio" name="program" checked={program === 'apcm'} onChange={() => setProgram('apcm')} />
-          <span>
-            <strong>APCM ({p.is_qmb ? 'G0558, QMB' : 'G0557'})</strong> — the AI makes the monthly check-in call; no time rule, needs a completed contact.
-            {!autoOk && <em className="warn-text"> This consent has no automated-call permission, so the monthly call will be a nurse task.</em>}
-          </span>
-        </label>
-      </fieldset>
-      <div className="grid2">
-        <fieldset className="field">
-          <legend>Readings to ask</legend>
-          {(['bp', 'glucose', 'weight', 'oxygen'] as ReadingType[]).map((r) => (
-            <label key={r} className="check">
-              <input type="checkbox" checked={readings.includes(r)} onChange={() => toggle(readings, r, setReadings)} />
-              {READINGS[r].label}
-              {defaults.readings.includes(r) && <span className="muted small"> · matches a condition</span>}
-            </label>
-          ))}
-          <div className="targets">
-            {readings.includes('bp') && (
-              <label>
-                BP target below{' '}
-                <input type="number" value={targets.bp.sysMax} onChange={(e) => setTargets({ ...targets, bp: { ...targets.bp, sysMax: Number(e.target.value) } })} />/
-                <input type="number" value={targets.bp.diaMax} onChange={(e) => setTargets({ ...targets, bp: { ...targets.bp, diaMax: Number(e.target.value) } })} />
-              </label>
-            )}
-            {readings.includes('glucose') && (
-              <label>
-                Fasting glucose{' '}
-                <input type="number" value={targets.glucose.min} onChange={(e) => setTargets({ ...targets, glucose: { ...targets.glucose, min: Number(e.target.value) } })} />–
-                <input type="number" value={targets.glucose.max} onChange={(e) => setTargets({ ...targets, glucose: { ...targets.glucose, max: Number(e.target.value) } })} />
-              </label>
-            )}
-            {readings.includes('weight') && (
-              <label>
-                Dry weight (lb){' '}
-                <input
-                  type="number"
-                  value={targets.weight.baseline ?? ''}
-                  onChange={(e) => setTargets({ ...targets, weight: { ...targets.weight, baseline: num(e.target.value) } })}
-                />{' '}
-                flag a gain of{' '}
-                <input type="number" value={targets.weight.maxGain} onChange={(e) => setTargets({ ...targets, weight: { ...targets.weight, maxGain: Number(e.target.value) } })} /> lb
-              </label>
-            )}
-            {readings.includes('oxygen') && (
-              <label>
-                Oxygen at least <input type="number" value={targets.oxygen.min} onChange={(e) => setTargets({ ...targets, oxygen: { min: Number(e.target.value) } })} />%
-              </label>
-            )}
-          </div>
-        </fieldset>
-        <fieldset className="field">
-          <legend>Symptoms to watch (red-flag rules)</legend>
-          {RULE_ORDER.map((r) => (
-            <label key={r} className="check">
-              <input type="checkbox" checked={symptoms.includes(r)} onChange={() => toggle(symptoms, r, setSymptoms)} />
-              {RULES[r].label}{' '}
-              <span className={`small ${RULES[r].level === 'urgent' ? 'danger-text' : 'muted'}`}>
-                {RULES[r].level === 'urgent' ? `urgent → ${RULES[r].escalation}` : 'concern → nurse'}
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-3xl" onOpenAutoFocus={focusDialog}>
+        <DialogHeader>
+          <DialogTitle>Call setup · {p.name}</DialogTitle>
+          <DialogDescription asChild>
+            <div className="flex flex-wrap justify-center gap-1.5 sm:justify-start">
+              {p.codes.map((c) => (
+                <Tooltip key={c.code}>
+                  <TooltipTrigger asChild>
+                    <span tabIndex={0} className="inline-flex rounded-full outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+                      <ToneBadge tone="info" className="font-mono">
+                        {c.code}
+                      </ToneBadge>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>{c.name}</TooltipContent>
+                </Tooltip>
+              ))}
+            </div>
+          </DialogDescription>
+        </DialogHeader>
+
+        <FieldSet className="gap-2">
+          <FieldLegend variant="label" className="mb-1">
+            Program
+          </FieldLegend>
+          <RadioGroup value={program ?? ''} onValueChange={(v) => setProgram(v as Program)} className="gap-2 sm:grid-cols-2">
+            <label
+              htmlFor="program-ccm"
+              className="flex cursor-pointer items-start gap-3 rounded-md border p-3 transition-colors hover:bg-muted/40 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
+            >
+              <RadioGroupItem id="program-ccm" value="ccm" className="mt-0.5" />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-sm font-semibold">CCM · 99490</span>
+                <span className="text-xs text-muted-foreground">Nurse makes the monthly call · needs 20 counted minutes</span>
               </span>
             </label>
-          ))}
-        </fieldset>
-      </div>
-      <label className="field inline">
-        Last EHR care plan review <input type="date" value={planDate} onChange={(e) => setPlanDate(e.target.value)} />
-      </label>
-      <div className="row gap end">
-        <button className="btn" onClick={onClose}>
-          Cancel
-        </button>
-        <button className="btn btn-primary" disabled={!program} onClick={save}>
-          {p.status === 'active' ? 'Save call setup' : 'Save and activate'}
-        </button>
-      </div>
-    </Modal>
+            <label
+              htmlFor="program-apcm"
+              className="flex cursor-pointer items-start gap-3 rounded-md border p-3 transition-colors hover:bg-muted/40 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5"
+            >
+              <RadioGroupItem id="program-apcm" value="apcm" className="mt-0.5" />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-sm font-semibold">APCM · {p.is_qmb ? 'G0558 · QMB' : 'G0557'}</span>
+                <span className="text-xs text-muted-foreground">AI makes the monthly check-in · needs a completed contact</span>
+              </span>
+            </label>
+          </RadioGroup>
+          {!autoOk && (
+            <p className="flex items-center gap-1.5 text-xs font-medium text-amber-700">
+              <TriangleAlert className="size-3.5 shrink-0" />
+              No automated-call consent: the monthly call becomes a nurse task
+            </p>
+          )}
+        </FieldSet>
+
+        <div className="grid gap-6 sm:grid-cols-2">
+          <FieldSet className="gap-1">
+            <FieldLegend variant="label" className="mb-1">
+              Readings to ask
+            </FieldLegend>
+            {(['bp', 'glucose', 'weight', 'oxygen'] as ReadingType[]).map((r) => (
+              <div key={r} className="flex flex-col gap-1">
+                <CheckRow
+                  id={`reading-${r}`}
+                  checked={readings.includes(r)}
+                  onToggle={() => toggle(readings, r, setReadings)}
+                  suffix={defaults.readings.includes(r) && <span className="text-xs text-muted-foreground">condition</span>}
+                >
+                  {READINGS[r].label}
+                </CheckRow>
+                {readings.includes(r) && target(r)}
+              </div>
+            ))}
+            <Field className="mt-4 max-w-56 gap-2">
+              <FieldLabel htmlFor="plan-reviewed">Last EHR care plan review</FieldLabel>
+              <Input id="plan-reviewed" type="date" value={planDate} onChange={(e) => setPlanDate(e.target.value)} />
+            </Field>
+          </FieldSet>
+          <FieldSet className="gap-1">
+            <FieldLegend variant="label" className="mb-1">
+              Symptoms to watch
+            </FieldLegend>
+            {RULE_ORDER.map((r) => (
+              <CheckRow
+                key={r}
+                id={`rule-${r}`}
+                checked={symptoms.includes(r)}
+                onToggle={() => toggle(symptoms, r, setSymptoms)}
+                suffix={
+                  RULES[r].level === 'urgent' ? (
+                    <span className="text-xs whitespace-nowrap text-destructive">urgent → {RULES[r].escalation}</span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">concern</span>
+                  )
+                }
+              >
+                {RULES[r].label}
+              </CheckRow>
+            ))}
+          </FieldSet>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={!program} onClick={save}>
+            {p.status === 'active' ? 'Save call setup' : 'Save and activate'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
