@@ -2,6 +2,8 @@
 
 A clickable prototype for one simulated month (October 2026) at one simulated practice, Westfield Family Medicine. A nurse and a practice manager can walk through the month and tell us whether the workflow makes sense. All data is hand-made and fictional (phones are +1 555 01XX). Nothing is ever dialled, texted or sent to an EHR.
 
+The workflow reference is [docs/WORKFLOW.md](docs/WORKFLOW.md). It covers each step of the month, the rules behind what the screens show, and the simulation controls.
+
 ## Run it
 
 ```bash
@@ -9,7 +11,7 @@ npm install
 npm start            # http://localhost:3000
 ```
 
-`npm start` runs one Node process: the API and SQLite database (`data/cureloom.db`), plus the React app through Vite. On first start the database is seeded. **Reset to seed** in the demo bar reloads it at any time.
+`npm start` runs one Node process: the API and SQLite database (`data/cureloom.db`), plus the React app through Vite. On first start the database is seeded. **Reset to seed** in the Simulation panel reloads it at any time.
 
 For a preview link on a private server:
 
@@ -20,18 +22,15 @@ HOST=0.0.0.0 PORT=3000 npm run serve
 
 Other commands: `npm test` runs the basic checks in `tests/`, and `npm run typecheck`.
 
-## The demo bar
+## Simulation controls
 
-The bar is at the top of every screen and holds:
+The demo controls are in a **Simulation** panel that opens from the header, not in a permanent demo bar. The details, including the walkthrough 11 sequence, are in [docs/WORKFLOW.md](docs/WORKFLOW.md#14-simulation-controls-for-testers).
 
-- **Role switcher**: Nurse (Rachel Okafor, RN), Physician (Dr. Anita Patel), Practice manager (Dana Brooks). There is no login.
-- **Demo clock**: starts Mon 5 Oct 2026 09:00. It has **+1 day**, **Go to date…** (forward only) and **Jump to month end** (Fri 30 Oct 14:00). While the app is open, time ticks in real time and stops at 18:00 each day.
-- **1 s = 1 min** (on by default): while a timer runs, each real second records one minute. Turn it off for real-time timers.
-- **Run October AI calls**: applies every APCM patient's scripted outcome from section 5, in date order (6–13 Oct). The clock moves to the last call.
-- **Save / Restore checkpoint**: snapshots the whole demo state. Use it for walkthrough 11, which needs a reset in the middle of the sequence. Save after walkthrough 10, reset and run 11, then restore and carry on with 12.
-- **Reset to seed**.
-
-A red banner shows on every screen while an urgent flag is open, with the 30-minute acknowledgement countdown.
+- **Demo clock**: starts Mon 5 Oct 2026 09:00 and only moves forward, with **+1 day**, **Go to date** and **Jump to month end** (Fri 30 Oct 14:00).
+- **1 s = 1 min**: while a timer runs, each real second records one minute.
+- **Run October AI calls**: plays every APCM patient's scripted October call in date order (6–13 Oct).
+- **Save / Restore checkpoint**: snapshots the whole demo state. Walkthrough 11 uses it.
+- **Reset to seed**: returns to Mon 5 Oct 2026 09:00.
 
 ## Screens
 
@@ -48,6 +47,8 @@ A red banner shows on every screen while an urgent flag is open, with the 30-min
 | Billing list (+ CSV) | Practice manager | `#/billing` |
 | Audit trail, Outbox | Anyone | `#/events`, `#/outbox` |
 
+There is no login: the role switcher changes between Nurse (Rachel Okafor, RN), Physician (Dr. Anita Patel) and Practice manager (Dana Brooks). A red banner shows on every screen while an urgent flag is open, with the 30-minute acknowledgement countdown.
+
 ## How it is built
 
 - `shared/`: domain logic used by both server and browser.
@@ -61,6 +62,8 @@ A red banner shows on every screen while an urgent flag is open, with the 30-min
   - `note.ts` builds the month-end note from stored rows.
   - `views.ts` computes everything the UI shows: queue, brief, stepper, billing, notes.
 - `src/`: React screens. The client only renders server state and posts commands.
+  - `src/components/ui/`: shadcn/ui components built on Radix UI and styled with Tailwind CSS v4. `components.json` is the shadcn config.
+  - `src/index.css` holds the theme tokens.
 - `seed/`:
   - `october-roster.csv` (the 15 patients) and `roster-with-errors.csv` (a sample with rejected rows).
   - `september.json`: active patients' September consent, call setup, September call and October schedule.
