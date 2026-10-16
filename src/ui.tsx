@@ -1,93 +1,50 @@
-import { useEffect, type ReactNode } from 'react';
-import type { BillingView } from '../shared/api';
-import type { PatientStatus } from '../shared/types';
-import { fmtDuration } from '../shared/time';
+// Transitional. Screens migrate to @/components/app and @/components/ui; delete when src/screens no longer import this.
+import type { ReactNode } from 'react';
+import { ToneBadge, type Tone } from '@/components/app/badges';
+import { Card as UiCard, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { cn } from '@/lib/utils';
 
-export function Badge({ tone = 'neutral', children }: { tone?: string; children: ReactNode }) {
-  return <span className={`badge badge-${tone}`}>{children}</span>;
-}
+export { BillingBadge, StatusBadge } from '@/components/app/badges';
+export { Countdown, Duration } from '@/components/app/time';
+export { money } from '@/lib/format';
 
-const STATUS_TONE: Record<PatientStatus, string> = {
-  eligible_unconfirmed: 'info',
-  confirmed: 'info',
-  consented: 'info',
-  active: 'ok',
-  ineligible: 'neutral',
-  needs_visit: 'warn',
-  opted_out: 'neutral',
-  paused: 'warn',
-};
-
-const STATUS_LABEL: Record<PatientStatus, string> = {
-  eligible_unconfirmed: 'Eligible, awaiting confirmation',
-  confirmed: 'Confirmed, no consent',
-  consented: 'Consented, no call setup',
-  active: 'Active',
-  ineligible: 'Not eligible',
-  needs_visit: 'Needs a visit',
-  opted_out: 'Opted out',
-  paused: 'Paused',
-};
-
-export function StatusBadge({ status }: { status: PatientStatus }) {
-  return <Badge tone={STATUS_TONE[status]}>{STATUS_LABEL[status]}</Badge>;
-}
-
-export function BillingBadge({ b }: { b: BillingView }) {
-  if (b.status === 'ready') return <Badge tone="ok">Ready</Badge>;
-  if (b.status === 'held') return <Badge tone="warn">Held</Badge>;
-  return <Badge>Not enrolled</Badge>;
-}
-
-export function money(n: number | null | undefined): string {
-  return n == null ? '—' : `$${n.toFixed(2)}`;
-}
-
-export function Card({ title, actions, children, className = '' }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
+export function Badge({ tone = 'neutral', children }: { tone?: Tone; children: ReactNode }) {
   return (
-    <section className={`card ${className}`}>
-      {(title || actions) && (
-        <header className="card-head">
-          {title && <h2>{title}</h2>}
-          {actions && <div className="card-actions">{actions}</div>}
-        </header>
-      )}
+    <ToneBadge tone={tone} className="mr-1">
       {children}
-    </section>
+    </ToneBadge>
+  );
+}
+
+export function Card({ title, actions, children, className }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
+  return (
+    // Like the old .card: the whole card scrolls sideways when a table is too wide.
+    <UiCard className={cn('gap-3 overflow-x-auto py-4', className)}>
+      {(title || actions) && (
+        <CardHeader className="flex flex-wrap items-center gap-2 px-4">
+          {title && <CardTitle className="leading-snug">{title}</CardTitle>}
+          {actions && <CardAction className="ml-auto flex flex-wrap items-center gap-2 self-center">{actions}</CardAction>}
+        </CardHeader>
+      )}
+      <CardContent className="px-4">{children}</CardContent>
+    </UiCard>
   );
 }
 
 export function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
-  useEffect(() => {
-    const on = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', on);
-    return () => window.removeEventListener('keydown', on);
-  }, [onClose]);
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
-        <header className="modal-head">
-          <h2>{title}</h2>
-          <button className="btn-icon" onClick={onClose} aria-label="Close">
-            ×
-          </button>
-        </header>
-        <div className="modal-body">{children}</div>
-      </div>
-    </div>
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent aria-describedby={undefined} className={cn('max-h-[calc(100dvh-4rem)] overflow-y-auto', wide && 'sm:max-w-4xl')}>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <div className="min-w-0">{children}</div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 export function Empty({ children }: { children: ReactNode }) {
-  return <p className="empty">{children}</p>;
-}
-
-export function Duration({ seconds }: { seconds: number }) {
-  return <span className="mono">{fmtDuration(seconds)}</span>;
-}
-
-export function Countdown({ dueMs, nowMs }: { dueMs: number; nowMs: number }) {
-  const left = Math.round((dueMs - nowMs) / 1000);
-  if (left <= 0) return <span className="countdown overdue">overdue by {fmtDuration(-left)}</span>;
-  return <span className="countdown">{fmtDuration(left)} left</span>;
+  return <p className="py-6 text-center text-sm text-muted-foreground">{children}</p>;
 }
