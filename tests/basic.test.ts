@@ -3,6 +3,9 @@
 // behave exactly: eligibility, the AI call run, time capture, the CCM/APCM
 // split and the billing list.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 import { openDb } from '../server/db';
 import { Service } from '../server/service';
@@ -166,4 +169,22 @@ test('time is floored to minutes, AI and unanswered calls never count, and the m
   for (const m of ['W11', 'W12', 'W13']) assert.equal(status(m).status, 'not_enrolled');
   assert.equal(s.billing.readyCount, 7);
   assert.equal(s.billing.readyTotal, 591.54);
+});
+
+test('restoring a checkpoint brings back the saved state after a reset', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cureloom-ckpt-'));
+  let real = 1_000_000;
+  const db = openDb(path.join(dir, 'main.db'));
+  const svc = new Service({ db, checkpointPath: path.join(dir, 'checkpoint.db'), realNow: () => (real += 1000) });
+  svc.reset();
+  svc.uploadRoster('manager', 'october-roster.csv', svc.rosterCsv());
+  svc.runAiCalls();
+  const calls = () => (db.prepare('SELECT count(*) AS c FROM call').get() as { c: number }).c;
+  const before = { patients: svc.patients().length, calls: calls() };
+  svc.saveCheckpoint();
+  svc.reset();
+  assert.notEqual(svc.patients().length, before.patients);
+  svc.restoreCheckpoint();
+  assert.deepEqual({ patients: svc.patients().length, calls: calls() }, before);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
