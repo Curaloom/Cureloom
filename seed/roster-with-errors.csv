@@ -1,0 +1,7 @@
+mrn,first_name,last_name,dob,phone,state,coverage,is_qmb,icd10_codes,last_visit_date,caregiver_name,caregiver_phone,preferred_language,consent_date,consent_method,automated_calls_ok,texts_ok
+W16,Nora,Quinn,1950-13-40,+1 555 0116,TX,traditional,no,I10;E11.9,2026-09-10,,,English,,,,
+W17,Paul,Ferris,1949-03-03,+1 512 867 5309,TX,traditional,no,I10;E11.9,2026-09-11,,,English,,,,
+,Ivy,Lang,1951-05-05,+1 555 0118,TX,traditional,no,I10;E11.9,2026-09-12,,,English,,,,
+W19,Owen,Reyes,1948-07-07,+1 555 0119,TX,medicaid,no,I10;E11.9,2026-09-13,,,English,,,,
+W20,Gail,Stone,1947-08-08,+1 555 0120,TX,traditional,no,I10;DIABETES,2026-09-14,,,English,,,,
+W21,Hank,Moss,1946-09-09,+1 555 0121,TX,traditional,no,I10;E78.5,2026-09-15,,,English,,,,

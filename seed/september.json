@@ -1,0 +1,136 @@
+{
+  "_about": "Patients marked active in the October roster, as they stood after enrolling in September: program, consent, call setup, September's monthly call, and their October call schedule. Demographics come from seed/october-roster.csv; 'september_overrides' holds fields that changed in October (W15 moved to Medicare Advantage).",
+  "active": [
+    {
+      "mrn": "W01",
+      "program": "apcm",
+      "consent": { "method": "at_visit", "consent_date": "2026-09-12", "automated_calls_ok": true, "texts_ok": false },
+      "call_setup": {
+        "readings": ["bp", "weight"],
+        "symptoms_to_watch": ["chest_pain", "breathing_severe", "stroke_signs", "fainting", "weight_gain", "leg_swelling"],
+        "targets": { "weight": { "baseline": 196, "maxGain": 5 } },
+        "ehr_plan_reviewed_on": "2026-09-12"
+      },
+      "september_call": { "kind": "ai", "at": "2026-09-15T10:00:00", "answered_by": "patient", "readings": { "bp": "136/84", "weight": "196" } },
+      "october_call": { "kind": "ai", "at": "2026-10-06T10:00:00" }
+    },
+    {
+      "mrn": "W02",
+      "program": "apcm",
+      "consent": { "method": "nurse_phone", "consent_date": "2026-09-03", "automated_calls_ok": true, "texts_ok": true },
+      "call_setup": {
+        "readings": ["bp", "glucose"],
+        "symptoms_to_watch": ["chest_pain", "stroke_signs", "low_glucose_spells"],
+        "targets": {},
+        "ehr_plan_reviewed_on": "2026-08-28"
+      },
+      "september_call": { "kind": "ai", "at": "2026-09-10T10:00:00", "answered_by": "patient", "readings": { "bp": "128/78", "glucose": "142" } },
+      "october_call": { "kind": "ai", "at": "2026-10-09T10:00:00" }
+    },
+    {
+      "mrn": "W03",
+      "program": "ccm",
+      "consent": { "method": "at_visit", "consent_date": "2026-09-15", "automated_calls_ok": true, "texts_ok": false },
+      "call_setup": {
+        "readings": ["oxygen"],
+        "symptoms_to_watch": ["breathing_severe", "stroke_signs", "fainting", "rescue_inhaler", "palpitations"],
+        "targets": {},
+        "ehr_plan_reviewed_on": "2026-09-15"
+      },
+      "september_call": { "kind": "nurse", "at": "2026-09-18T14:00:00", "answered_by": "patient", "readings": { "oxygen": "95" }, "note": "rescue inhaler about once a day" },
+      "october_call": { "kind": "nurse", "at": "2026-10-05T09:00:00" }
+    },
+    {
+      "mrn": "W04",
+      "program": "apcm",
+      "consent": { "method": "at_visit", "consent_date": "2026-09-09", "automated_calls_ok": true, "texts_ok": true },
+      "call_setup": {
+        "readings": ["bp"],
+        "symptoms_to_watch": ["chest_pain", "stroke_signs", "self_harm", "low_mood", "falls"],
+        "targets": {},
+        "ehr_plan_reviewed_on": "2026-09-09"
+      },
+      "september_call": { "kind": "ai", "at": "2026-09-14T10:00:00", "answered_by": "patient", "readings": { "bp": "132/82" } },
+      "october_call": { "kind": "ai", "at": "2026-10-08T10:00:00" }
+    },
+    {
+      "mrn": "W05",
+      "program": "ccm",
+      "consent": { "method": "at_visit", "consent_date": "2026-09-02", "automated_calls_ok": false, "texts_ok": false },
+      "call_setup": {
+        "readings": ["glucose"],
+        "symptoms_to_watch": ["chest_pain", "low_glucose_spells"],
+        "targets": {},
+        "ehr_plan_reviewed_on": "2026-09-02"
+      },
+      "september_call": { "kind": "nurse", "at": "2026-09-09T11:00:00", "answered_by": "patient", "readings": { "glucose": "118-140" } },
+      "october_call": { "kind": "nurse", "at": "2026-10-05T09:00:00" }
+    },
+    {
+      "mrn": "W06",
+      "program": "ccm",
+      "consent": { "method": "at_visit", "consent_date": "2026-09-11", "automated_calls_ok": true, "texts_ok": false },
+      "call_setup": {
+        "readings": ["bp", "weight"],
+        "symptoms_to_watch": ["chest_pain", "breathing_severe", "stroke_signs", "fainting", "weight_gain", "leg_swelling"],
+        "targets": { "weight": { "baseline": 152, "maxGain": 5 } },
+        "ehr_plan_reviewed_on": "2026-09-11"
+      },
+      "september_call": { "kind": "nurse", "at": "2026-09-16T10:30:00", "answered_by": "patient", "readings": { "bp": "130/76", "weight": "152" } },
+      "october_call": { "kind": "nurse", "at": "2026-10-05T09:00:00" }
+    },
+    {
+      "mrn": "W07",
+      "program": "apcm",
+      "consent": { "method": "at_visit", "consent_date": "2026-09-25", "automated_calls_ok": true, "texts_ok": true },
+      "call_setup": {
+        "readings": ["bp", "oxygen"],
+        "symptoms_to_watch": ["chest_pain", "breathing_severe", "stroke_signs", "rescue_inhaler"],
+        "targets": {},
+        "ehr_plan_reviewed_on": "2026-09-25"
+      },
+      "september_call": { "kind": "ai", "at": "2026-09-29T10:30:00", "answered_by": "patient", "readings": { "bp": "138/86", "oxygen": "94" } },
+      "october_call": { "kind": "ai", "at": "2026-10-07T10:30:00" }
+    },
+    {
+      "mrn": "W10",
+      "program": "apcm",
+      "consent": { "method": "at_visit", "consent_date": "2026-09-05", "automated_calls_ok": true, "texts_ok": false },
+      "call_setup": {
+        "readings": ["bp"],
+        "symptoms_to_watch": ["chest_pain", "stroke_signs", "confusion", "falls"],
+        "targets": {},
+        "ehr_plan_reviewed_on": "2026-09-05"
+      },
+      "september_call": { "kind": "ai", "at": "2026-09-11T11:00:00", "answered_by": "caregiver", "readings": { "bp": "128/80" }, "note": "no falls" },
+      "october_call": { "kind": "ai", "at": "2026-10-08T11:00:00" }
+    },
+    {
+      "mrn": "W14",
+      "program": "apcm",
+      "consent": { "method": "at_visit", "consent_date": "2026-09-08", "automated_calls_ok": true, "texts_ok": false },
+      "call_setup": {
+        "readings": ["weight", "oxygen"],
+        "symptoms_to_watch": ["chest_pain", "breathing_severe", "fainting", "rescue_inhaler", "weight_gain", "leg_swelling"],
+        "targets": { "weight": { "baseline": 141, "maxGain": 5 } },
+        "ehr_plan_reviewed_on": "2026-09-08"
+      },
+      "september_call": { "kind": "ai", "at": "2026-09-12T10:00:00", "answered_by": "patient", "readings": { "weight": "141", "oxygen": "93" } },
+      "october_call": { "kind": "ai", "at": "2026-10-07T10:00:00" }
+    },
+    {
+      "mrn": "W15",
+      "program": "ccm",
+      "september_overrides": { "coverage": "traditional" },
+      "consent": { "method": "at_visit", "consent_date": "2026-09-03", "automated_calls_ok": false, "texts_ok": false },
+      "call_setup": {
+        "readings": ["bp", "glucose"],
+        "symptoms_to_watch": ["chest_pain", "stroke_signs", "low_glucose_spells"],
+        "targets": {},
+        "ehr_plan_reviewed_on": "2026-09-03"
+      },
+      "september_call": { "kind": "nurse", "at": "2026-09-10T15:00:00", "answered_by": "patient", "readings": { "bp": "134/80", "glucose": "150" } },
+      "october_call": { "kind": "nurse", "at": "2026-10-05T09:00:00" }
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "_about": "October script from section 5 of the build brief. 'ai' holds each APCM patient's scripted AI call answers (one entry per attempt); 'nurse' holds the patient's lines for the nurse call. Any step not listed gets a plain default answer (no symptoms, taking all medicines, nothing needed).",
+  "ai": {
+    "W01": [{ "symptoms": { "chest_pain": "Yes, I had chest tightness on the stairs today." } }],
+    "W02": [
+      {
+        "meds": "I ran out of metformin 3 days ago.",
+        "readings": { "bp": "126 over 78", "glucose": "240 this morning, fasting." },
+        "needs": "I need a refill of my metformin."
+      }
+    ],
+    "W04": [{ "readings": { "bp": "128 over 80" } }],
+    "W07": [{ "pickup": false }, { "pickup": false }, { "pickup": false }],
+    "W08": [{ "readings": { "bp": "132 over 78", "glucose": "118" } }],
+    "W10": [
+      {
+        "identify": "caregiver",
+        "symptoms": { "confusion": "No more than usual.", "falls": "No falls this month." },
+        "readings": { "bp": "130 over 82" }
+      }
+    ],
+    "W14": [{ "disclose": "Stop calling me." }]
+  },
+  "nurse": {
+    "W01": {
+      "general": "I called 911 right after the automated call, like it told me. The ambulance took me to the ER.",
+      "symptoms": { "chest_pain": "No, no chest tightness since then." },
+      "er": "Yes, the ER at Westfield General on the 6th. They checked my heart and sent me home the next day."
+    },
+    "W03": {
+      "general": "Mostly okay, but my breathing has been worse this month.",
+      "symptoms": { "rescue_inhaler": "Yes, I'm using my rescue inhaler about 4 times a day now, up from once a day." },
+      "readings": { "oxygen": "My oxygen was 93 this morning." }
+    },
+    "W05": {
+      "general": "Doing well, no complaints.",
+      "readings": { "glucose": "My sugars have been between 110 and 135." }
+    },
+    "W06": {
+      "general": "Better now. I had a rough start to the month.",
+      "meds": "I'm taking everything, with the new water pill dose they gave me at the ER.",
+      "symptoms": { "leg_swelling": "No, the swelling has gone down since they changed my water pill." },
+      "er": "Yes, I went to the ER on October 2nd for leg swelling. They sent me home the same day and changed my water pill.",
+      "readings": { "bp": "About 128 over 76.", "weight": "148 pounds this morning." }
+    },
+    "W09": {
+      "readings": { "bp": "Around 132 over 80." }
+    }
+  }
+}

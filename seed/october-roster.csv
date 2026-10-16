@@ -1,0 +1,16 @@
+mrn,first_name,last_name,dob,phone,state,coverage,is_qmb,icd10_codes,last_visit_date,caregiver_name,caregiver_phone,preferred_language,consent_date,consent_method,automated_calls_ok,texts_ok
+W01,Harold,Jenkins,1948-02-17,+1 555 0101,TX,traditional,no,I50.9;N18.3;I10,2026-09-12,,,English,,,,
+W02,Maria,Delgado,1955-06-03,+1 555 0102,TX,traditional,yes,E11.9;I10,2026-08-28,,,English,,,,
+W03,Walter,Nguyen,1943-01-22,+1 555 0103,TX,traditional,no,J44.9;I48.91,2026-09-15,,,English,,,,
+W04,Doris,Whitfield,1951-04-09,+1 555 0104,TX,traditional,yes,I10;M19.90;F32.A,2026-09-09,,,English,,,,
+W05,Samuel,Ortiz,1957-03-28,+1 555 0105,TX,traditional,no,E11.9;E78.5,2026-09-02,,,English,,,,
+W06,Evelyn,Marsh,1945-07-30,+1 555 0106,TX,traditional,no,I50.9;I10;N18.3,2026-09-11,,,English,,,,
+W07,George,Pappas,1952-05-14,+1 555 0107,TX,traditional,no,J44.9;I10,2026-09-25,,,English,,,,
+W08,Linda,Carver,1949-01-05,+1 555 0108,TX,traditional,no,E11.9;I10;E03.9,2026-10-01,,,English,2026-10-01,at_visit,yes,no
+W09,Robert,Kim,1946-08-19,+1 555 0109,TX,traditional,no,I48.91;I10,2026-09-17,,,English,,,,
+W10,Agnes,Rowe,1940-02-11,+1 555 0110,TX,traditional,yes,F03.90;I10;M81.0,2026-09-05,Joan Rowe (daughter),+1 555 0150,English,,,,
+W11,Frank,Olsen,1954-03-02,+1 555 0111,TX,traditional,no,I10,2026-09-20,,,English,,,,
+W12,Betty,Haynes,1947-04-25,+1 555 0112,TX,traditional,no,E11.9;N18.3,2025-08-14,,,English,,,,
+W13,Carl,Mendez,1950-06-07,+1 555 0113,TX,advantage,no,I10;E78.5,2026-09-30,,,English,,,,
+W14,Ruth,Simmons,1942-05-18,+1 555 0114,TX,traditional,no,I50.9;J44.9,2026-09-08,,,English,,,,
+W15,Leon,Price,1953-02-26,+1 555 0115,TX,advantage,no,E11.9;I10,2026-09-03,,,English,,,,
