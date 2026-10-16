@@ -1,9 +1,17 @@
 import { useState } from 'react';
+import { PhoneCall } from 'lucide-react';
 import type { RunItem } from '../../shared/api';
 import { aiAnswer, aiPrompt, aiStart, type AiContext, type AiInput, type AiState } from '../../shared/aiCall';
 import { toIso } from '../../shared/time';
+import { ToneBadge } from '@/components/app/badges';
+import { EmptyState } from '@/components/app/empty-state';
+import { InfoTip } from '@/components/app/info-tip';
+import { PageHeader } from '@/components/app/page-header';
+import { Button } from '@/components/ui/button';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { useDemoNowMs, useStore } from '../store';
-import { Badge, Card, Empty } from '../ui';
 import { RunSummary } from './RunSummary';
 import { Transcript } from './Transcript';
 
@@ -53,90 +61,120 @@ export function Simulator() {
   const prompt = sim && ctx ? aiPrompt(sim, ctx) : null;
 
   return (
-    <div className="stack">
-      <div className="page-head">
-        <h1>AI call simulator</h1>
-        <p className="muted">
-          You play the patient. The AI only asks scripted questions, discloses that it is automated and recorded, and routes concerns to the nurse. Urgent answers
-          end the call with a 911 (or 988) instruction. Nothing is dialled.
-        </p>
-      </div>
-      <div className="grid2">
-        <Card title="Play one patient's call">
-          <div className="row gap tight wrap">
-            <select
-              className="input grow"
-              value={pid ?? ''}
-              onChange={(e) => {
-                setPid(e.target.value ? Number(e.target.value) : null);
-                setSim(null);
-                setSaved(null);
-              }}
-            >
-              <option value="">Pick an APCM patient…</option>
-              {apcm.map((x) => (
-                <option key={x.id} value={x.id} disabled={!x.ai.ok}>
-                  {x.name} ({x.mrn}){x.ai.ok ? '' : ` — ${x.ai.reason}`}
-                </option>
-              ))}
-            </select>
-            <button className="btn btn-primary" disabled={!p || !p.ai.ok || busy || (sim !== null && !sim.done)} onClick={start}>
-              {sim?.done ? 'Call again' : 'Start call'}
-            </button>
-          </div>
-          {!sim ? (
-            <Empty>Pick a patient and start the call.</Empty>
-          ) : (
-            <>
-              <Transcript lines={sim.transcript} live />
-              {prompt && (
-                <div className="sim-answer">
-                  <div className="row gap tight wrap">
-                    {prompt.options.map((o) => (
-                      <button key={o.id} className="btn" onClick={() => answer({ choice: o.id })} title={o.say ?? ''}>
-                        {o.label}
-                      </button>
-                    ))}
+    <div className="flex flex-col gap-4">
+      <PageHeader title="Call simulator" description="You play the patient." />
+      <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
+        <Card className="gap-4">
+          <CardHeader>
+            <CardTitle>Play a call</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <div className="flex flex-wrap gap-2">
+              <div className="min-w-48 flex-1 [&>[data-slot=native-select-wrapper]]:w-full">
+                <NativeSelect
+                  aria-label="APCM patient"
+                  value={pid ?? ''}
+                  onChange={(e) => {
+                    setPid(e.target.value ? Number(e.target.value) : null);
+                    setSim(null);
+                    setSaved(null);
+                  }}
+                >
+                  <NativeSelectOption value="">Pick an APCM patient…</NativeSelectOption>
+                  {apcm.map((x) => (
+                    <NativeSelectOption key={x.id} value={x.id} disabled={!x.ai.ok}>
+                      {x.name} ({x.mrn}){x.ai.ok ? '' : ` — ${x.ai.reason}`}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              </div>
+              <Button disabled={!p || !p.ai.ok || busy || (sim !== null && !sim.done)} onClick={start}>
+                <PhoneCall />
+                {sim?.done ? 'Call again' : 'Start call'}
+              </Button>
+            </div>
+            {!sim ? (
+              <div className="rounded-lg border border-dashed">
+                <EmptyState title="Pick a patient and start the call" />
+              </div>
+            ) : (
+              <>
+                <div className="max-h-[420px] overflow-y-auto">
+                  <Transcript lines={sim.transcript} live />
+                </div>
+                {prompt && (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-wrap gap-2">
+                      {prompt.options.map((o) => (
+                        <Button key={o.id} variant="outline" size="sm" onClick={() => answer({ choice: o.id })} title={o.say ?? ''}>
+                          {o.label}
+                        </Button>
+                      ))}
+                    </div>
+                    {prompt.textPlaceholder && (
+                      <form
+                        className="flex gap-2"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          if (text.trim()) answer({ text: text.trim() });
+                        }}
+                      >
+                        <Input
+                          className="h-8 flex-1"
+                          aria-label="What the patient says"
+                          placeholder={prompt.textPlaceholder}
+                          value={text}
+                          onChange={(e) => setText(e.target.value)}
+                        />
+                        <Button type="submit" variant="outline" size="sm">
+                          Say it
+                        </Button>
+                      </form>
+                    )}
                   </div>
-                  {prompt.textPlaceholder && (
-                    <form
-                      className="row gap tight"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        if (text.trim()) answer({ text: text.trim() });
-                      }}
-                    >
-                      <input className="input grow" placeholder={prompt.textPlaceholder} value={text} onChange={(e) => setText(e.target.value)} />
-                      <button className="btn">Say it</button>
-                    </form>
-                  )}
-                </div>
-              )}
-              {sim.done && (
-                <div className="sim-done">
-                  <Badge tone={sim.outcome === 'escalated' ? 'danger' : sim.outcome === 'completed' ? 'ok' : 'warn'}>{sim.outcome?.replace('_', ' ')}</Badge>{' '}
-                  {saved ? (
-                    <span>
-                      Saved. {saved.detail} <a href={`#/patient/${saved.patientId}`}>Open patient</a>
-                    </span>
-                  ) : (
-                    <span className="muted">Saving…</span>
-                  )}
-                </div>
-              )}
-            </>
-          )}
+                )}
+                {sim.done && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                    <ToneBadge tone={sim.outcome === 'escalated' ? 'danger' : sim.outcome === 'completed' ? 'ok' : 'warn'} className="capitalize">
+                      {sim.outcome?.replace('_', ' ')}
+                    </ToneBadge>
+                    {saved ? (
+                      <span>
+                        Saved. {saved.detail}{' '}
+                        <a href={`#/patient/${saved.patientId}`} className="font-medium text-primary hover:underline">
+                          Open patient
+                        </a>
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">Saving…</span>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </CardContent>
         </Card>
-        <Card
-          title="Run October AI calls"
-          actions={
-            <button className="btn btn-primary" disabled={busy} onClick={() => act('runAiCalls')}>
-              Run October AI calls
-            </button>
-          }
-        >
-          <p className="muted small">Applies every APCM patient's scripted October outcome from section 5, in date order (6–13 Oct). The demo clock moves to the last call.</p>
-          {state.lastRun ? <RunSummary run={state.lastRun} /> : <Empty>Not run yet.</Empty>}
+        <Card className="gap-4">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-1.5">
+              October AI calls
+              <InfoTip>Plays the scripted 6–13 Oct calls in date order</InfoTip>
+            </CardTitle>
+            <CardAction>
+              <Button size="sm" disabled={busy} onClick={() => act('runAiCalls')}>
+                Run
+              </Button>
+            </CardAction>
+          </CardHeader>
+          <CardContent>
+            {state.lastRun ? (
+              <RunSummary run={state.lastRun} />
+            ) : (
+              <div className="rounded-lg border border-dashed">
+                <EmptyState title="Not run yet" />
+              </div>
+            )}
+          </CardContent>
         </Card>
       </div>
     </div>
