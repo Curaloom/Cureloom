@@ -1,10 +1,12 @@
 import express from 'express';
 import type { AiInput } from '../shared/aiCall';
+import { CODE_LABEL } from '../shared/constants';
 import type { Role } from '../shared/types';
-import { fmtDateTime } from '../shared/time';
+import { fmtDateTime, lastDayOfMonth } from '../shared/time';
+import { auditPacket } from './audit';
 import { toCsv } from './roster';
 import { Service, UserError } from './service';
-import { buildState } from './views';
+import { buildState, operatorName, patientDetail, patientIdOfCall } from './views';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Body = any;
@@ -19,7 +21,7 @@ function actions(svc: Service): Record<string, (role: Role, b: Body) => unknown>
     setSpeed: (_r, b) => svc.setSpeed(Number(b.speed)),
     saveCheckpoint: () => svc.saveCheckpoint(),
     restoreCheckpoint: () => svc.restoreCheckpoint(),
-    uploadRoster: (r, b) => svc.uploadRoster(r, b.filename, b.csv),
+    uploadRoster: (r, b) => svc.uploadRoster(r, b.filename, b.csv, b.practiceCode),
     uploadSeedRoster: (r) => svc.uploadRoster(r, 'october-roster.csv', svc.rosterCsv()),
     confirmEligibility: (r, b) => svc.confirmEligibility(r, b.patientId),
     startConsentCall: (r, b) => svc.startConsentCall(r, b.patientId),
@@ -45,6 +47,11 @@ function actions(svc: Service): Record<string, (role: Role, b: Body) => unknown>
     noteCopied: (r, b) => svc.noteCopied(r, b.patientId),
     fileNote: (r, b) => svc.fileNote(r, b.patientId, b.text),
     signAttestation: (r, b) => svc.signAttestation(r, b.text),
+    runEligibilityCheck: (r) => svc.runEligibilityCheck(r),
+    documentRiskBasis: (r, b) => svc.documentRiskBasis(r, b.patientId, b.text),
+    markRiskNotMet: (r, b) => svc.markRiskNotMet(r, b.patientId, b.note),
+    fastForwardMonth: () => svc.fastForwardMonth(),
+    saveSettings: (_r, b) => svc.saveSettings(b.key, b.value),
   };
 }
 
@@ -54,12 +61,48 @@ function sendCsv(res: express.Response, name: string, csv: string) {
   res.send(csv);
 }
 
+function fail(res: express.Response, e: unknown) {
+  if (e instanceof UserError) return res.status(e.status).json({ error: e.message });
+  console.error(e);
+  res.status(500).json({ error: e instanceof Error ? e.message : 'Something went wrong.' });
+}
+
 export function createApi(svc: Service): express.Router {
   const api = express.Router();
   const table = actions(svc);
 
-  api.get('/api/state', (_req, res) => {
+  // Polled every few seconds: a 304 when nothing changed keeps that cheap.
+  api.get('/api/state', (req, res) => {
+    svc.tick();
+    const v = `"${svc.version()}"`;
+    if (req.header('if-none-match') === v) return res.status(304).end();
+    res.setHeader('ETag', v);
+    res.setHeader('Cache-Control', 'no-cache');
     res.json(buildState(svc));
+  });
+
+  api.get('/api/patient/:id', (req, res) => {
+    try {
+      res.json(patientDetail(svc, Number(req.params.id)));
+    } catch (e) {
+      fail(res, e);
+    }
+  });
+
+  api.get('/api/call/:id/patient', (req, res) => {
+    try {
+      res.json(patientDetail(svc, patientIdOfCall(svc, Number(req.params.id))));
+    } catch (e) {
+      fail(res, e);
+    }
+  });
+
+  api.get('/api/audit/:id', (req, res) => {
+    try {
+      res.json(auditPacket(svc, Number(req.params.id), operatorName(svc)));
+    } catch (e) {
+      fail(res, e);
+    }
   });
 
   api.get('/api/events', (req, res) => {
@@ -75,7 +118,8 @@ export function createApi(svc: Service): express.Router {
 
   api.get('/api/billing.csv', (_req, res) => {
     const s = buildState(svc);
-    const rows = s.billing.rows.map((r) => [
+    const rows = s.patients.map((r) => [
+      r.practiceName,
       r.mrn,
       r.name,
       r.program?.toUpperCase() ?? '',
@@ -84,17 +128,58 @@ export function createApi(svc: Service): express.Router {
       r.billing.status === 'not_enrolled' ? 'not enrolled' : r.billing.status,
       r.billing.reason ?? '',
       r.billing.minutes,
+      r.billing.warnings ? r.billing.checks.filter((c) => c.status === 'warn').map((c) => c.label).join('; ') : '',
     ]);
     sendCsv(
       res,
-      `billing-${s.clock.month}.csv`,
+      `billing-preflight-${s.clock.month}.csv`,
       toCsv([
-        ['mrn', 'patient', 'program', 'code', 'amount', 'status', 'reason', 'counted_minutes'],
+        ['practice', 'mrn', 'patient', 'program', 'code', 'amount', 'status', 'reason', 'counted_minutes', 'warnings'],
         ...rows,
         [],
-        ['', `Total ready: ${s.billing.readyCount} patients`, '', '', s.billing.readyTotal.toFixed(2)],
+        ['', '', `Total ready: ${s.billing.readyCount} patients`, '', '', s.billing.readyTotal.toFixed(2)],
+        ['Synthetic demo data. Amounts are 2026 national non-facility rates, before geographic adjustment and sequestration.'],
       ]),
     );
+  });
+
+  /** Claims-ready lines for the operator's billing team: only months that passed every check. */
+  api.get('/api/claims.csv', (_req, res) => {
+    const s = buildState(svc);
+    const byId = new Map(s.practices.map((p) => [p.code, p]));
+    const end = lastDayOfMonth(s.clock.month);
+    const rows = s.patients
+      .filter((r) => r.billing.status === 'ready')
+      .map((r) => {
+        const pr = byId.get(r.practiceCode)!;
+        return [pr.name, pr.physician, r.mrn, r.name, r.dob, `${s.clock.month}-01`, end, r.billing.code, CODE_LABEL[r.billing.code!], 1, r.billing.amount!.toFixed(2)];
+      });
+    sendCsv(
+      res,
+      `claims-ready-${s.clock.month}.csv`,
+      toCsv([
+        ['practice', 'billing_practitioner', 'mrn', 'patient', 'dob', 'service_from', 'service_to', 'code', 'description', 'units', 'national_rate'],
+        ...rows,
+        [],
+        ['Synthetic demo data. Not a claim file: the practice bills under its own NPI through its own biller.'],
+      ]),
+    );
+  });
+
+  api.get('/api/held.csv', (_req, res) => {
+    const s = buildState(svc);
+    const rows = s.patients
+      .filter((r) => r.billing.status === 'held')
+      .map((r) => [
+        r.practiceName,
+        r.mrn,
+        r.name,
+        r.program?.toUpperCase() ?? '',
+        r.billing.code ?? '',
+        r.billing.reason ?? '',
+        r.billing.checks.filter((c) => c.status === 'fail').map((c) => `${c.label}: ${c.detail}`).join(' | '),
+      ]);
+    sendCsv(res, `held-${s.clock.month}.csv`, toCsv([['practice', 'mrn', 'patient', 'program', 'code', 'held_reason', 'failing_checks'], ...rows]));
   });
 
   api.get('/api/roster-errors.csv', (_req, res) => {
@@ -118,9 +203,7 @@ export function createApi(svc: Service): express.Router {
       const result = fn(role, req.body ?? {});
       res.json({ ok: true, result: result ?? null, state: buildState(svc) });
     } catch (e) {
-      if (e instanceof UserError) return res.status(e.status).json({ error: e.message });
-      console.error(e);
-      res.status(500).json({ error: e instanceof Error ? e.message : 'Something went wrong.' });
+      fail(res, e);
     }
   });
 

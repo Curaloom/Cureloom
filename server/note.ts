@@ -2,7 +2,7 @@
 // from scratch. Plain text so the nurse can paste it into the EHR.
 
 import { codeName } from '../shared/codes';
-import { ACTIVITIES, CCM_MINUTES, CODE_LABEL, PRACTICE, STAFF } from '../shared/constants';
+import { ACTIVITIES, CCM_MINUTES, CODE_LABEL } from '../shared/constants';
 import type { Patient } from '../shared/model';
 import {
   ageOn,
@@ -19,6 +19,15 @@ import {
 import { billingCode } from './billing';
 import { answerLines, callSeconds, reached } from './describe';
 import { fullName, type Service } from './service';
+
+export function attestationText(month: string, practiceName: string): string {
+  return (
+    `I attest that, for ${monthLabel(month)}, the care management services documented in the notes filed for the patients listed ` +
+    `were furnished by clinical staff working for ${practiceName} under my general supervision and in line with each patient's care plan; ` +
+    `that I am the one billing practitioner for these services this month; and that CCM time was counted from clinical staff activity ` +
+    `only, with automated (AI) contact never counted.`
+  );
+}
 
 /** Patients who get a note this month: everyone active, plus anyone who opted out or paused after activity this month. */
 export function monthEndPatients(svc: Service, month: string): Patient[] {
@@ -45,10 +54,12 @@ export function buildNote(svc: Service, p: Patient, month: string): string {
   const time = svc.timeOf(p.id, month);
   const tasks = svc.tasksOf(p.id).filter((t) => inMonth(t.created_at, month) || t.status === 'open');
   const code = billingCode(p);
+  const pr = svc.practiceOf(p);
+  const nurseOf = (callId: number) => time.find((t) => t.call_id === callId)?.user ?? p.care_manager;
   const L: string[] = [];
 
   L.push(`CARE MANAGEMENT MONTHLY NOTE — ${monthLabel(month)}`);
-  L.push(`${PRACTICE.name} · Billing practitioner: ${STAFF.physician.name}`);
+  L.push(`${pr.name} · Billing practitioner: ${pr.physician} · Care manager: ${p.care_manager}`);
   L.push('');
   L.push(`Patient: ${fullName(p)} · MRN ${p.mrn} · DOB ${fmtDate(p.dob)} (age ${ageOn(p.dob, `${month}-01`)})`);
   L.push(`Program: ${p.program ? `${p.program.toUpperCase()}${code ? `, ${code} — ${CODE_LABEL[code]}` : ''}` : 'not set'}`);
@@ -70,7 +81,7 @@ export function buildNote(svc: Service, p: Patient, month: string): string {
     const head =
       c.kind === 'ai'
         ? `- ${fmtDateTime(c.started_at)} · AI check-in call`
-        : `- ${fmtDateTime(c.started_at)} · Nurse call · ${STAFF.nurse.name}`;
+        : `- ${fmtDateTime(c.started_at)} · Nurse call · ${nurseOf(c.id)}`;
     const by = c.answered_by ? ` · answered by ${c.answered_by === 'caregiver' ? `caregiver (${p.caregiver_name ?? 'caregiver'})` : 'patient'}` : '';
     const outcome =
       c.outcome === 'no_answer'
@@ -85,7 +96,9 @@ export function buildNote(svc: Service, p: Patient, month: string): string {
     L.push(`${head} · ${outcome}${by} · ${fmtDuration(callSeconds(c))}${c.kind === 'ai' ? ' (automated; not counted)' : ''}`);
     for (const line of answerLines(c, setup)) L.push(`    ${line}`);
     if (c.kind === 'ai' && reached(c)) {
-      L.push(`    Result: ${c.flag === 'urgent' ? 'urgent — patient told to call 911; nurse and practice alerted' : c.flag === 'concern' ? 'concern routed to the nurse' : 'no concerns'}`);
+      L.push(
+        `    Result: ${c.flag === 'urgent' ? 'urgent — patient advised to call 911 (or 988); AI stayed on the line and requested a live transfer to the on-duty nurse; practice alerted' : c.flag === 'concern' ? 'concern routed to the nurse' : 'no concerns'}`,
+      );
     }
     if (c.nurse_note) L.push(`    Nurse note: ${c.nurse_note}`);
   }
@@ -156,6 +169,6 @@ export function buildNote(svc: Service, p: Patient, month: string): string {
     );
   }
   L.push('');
-  L.push(`Drafted by Cureloom from logged activity. Reviewed and filed by: ${STAFF.nurse.name}`);
+  L.push(`Drafted by Cureloom from logged activity. Reviewed and filed by: ${p.care_manager}`);
   return L.join('\n');
 }

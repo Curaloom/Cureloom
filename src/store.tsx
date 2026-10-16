@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { AppState } from '../shared/api';
+import type { AppState, PatientView } from '../shared/api';
 import type { Role } from '../shared/types';
 
 export interface ActResult<T = unknown> {
@@ -30,7 +30,7 @@ function loadRole(): Role {
   } catch {
     /* storage unavailable */
   }
-  return 'nurse';
+  return 'manager';
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -40,12 +40,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Store['toast']>(null);
   const pending = useRef(0);
+  const etag = useRef<string | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
 
   const say = useCallback((text: string, kind: 'error' | 'ok' = 'error') => {
     setToast({ kind, text });
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), kind === 'error' ? 6000 : 3000);
+    toastTimer.current = window.setTimeout(() => setToast(null), kind === 'error' ? 6000 : 3500);
   }, []);
 
   const accept = useCallback((s: AppState) => {
@@ -55,8 +56,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const r = await fetch('/api/state');
-      if (r.ok && pending.current === 0) accept(await r.json());
+      // The server answers 304 when nothing changed, so polling stays cheap with ~300 patients.
+      const r = await fetch('/api/state', { headers: etag.current ? { 'If-None-Match': etag.current } : {} });
+      if (r.status === 304) return;
+      if (r.ok && pending.current === 0) {
+        etag.current = r.headers.get('ETag');
+        accept(await r.json());
+      }
     } catch {
       /* server restarting; next poll retries */
     }
@@ -77,6 +83,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           say(j.error ?? 'Something went wrong.');
           return { ok: false, error: j.error };
         }
+        etag.current = null;
         accept(j.state);
         return { ok: true, result: j.result as T };
       } catch {
@@ -120,6 +127,45 @@ export function useStore(): Store & { state: AppState } {
 
 export function useStoreMaybe(): Store | null {
   return useContext(Ctx);
+}
+
+function useDetail(url: string | null): { p: PatientView | null; loading: boolean; missing: boolean } {
+  const { state } = useStore();
+  const [p, setP] = useState<PatientView | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [missing, setMissing] = useState(false);
+  useEffect(() => {
+    if (!url) {
+      setP(null);
+      return;
+    }
+    let live = true;
+    setLoading(true);
+    fetch(url)
+      .then(async (r) => {
+        if (!live) return;
+        if (r.ok) {
+          setP(await r.json());
+          setMissing(false);
+        } else setMissing(true);
+      })
+      .catch(() => live && setMissing(true))
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [url, state.version]);
+  return { p: p && (url?.includes(`/${p.id}`) || url?.includes('/call/')) ? p : null, loading, missing };
+}
+
+/** One patient in full, refetched whenever the data changes. */
+export function usePatient(id: number | null) {
+  return useDetail(id != null && !Number.isNaN(id) ? `/api/patient/${id}` : null);
+}
+
+/** The patient a call belongs to. */
+export function usePatientByCall(callId: number) {
+  return useDetail(Number.isNaN(callId) ? null : `/api/call/${callId}/patient`);
 }
 
 /** Re-render every `ms` milliseconds. */

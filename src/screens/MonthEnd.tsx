@@ -1,16 +1,20 @@
 import { useEffect, useState } from 'react';
 import { fmtDateTime } from '../../shared/time';
 import { go } from '../router';
-import { useStore } from '../store';
-import { Badge, BillingBadge, Card, Empty } from '../ui';
+import { usePatient, useStore } from '../store';
+import { Badge, BillingBadge, Card, Empty, Loading } from '../ui';
 
 export function MonthEnd({ selected }: { selected: number | null }) {
   const { state, role, act, say } = useStore();
-  const list = state.patients.filter((p) => state.monthEnd.patientIds.includes(p.id));
-  const p = list.find((x) => x.id === selected) ?? null;
+  const [practice, setPractice] = useState<string>(state.live.code);
+  const ids = new Set(state.monthEnd.patientIds);
+  const all = state.patients.filter((p) => ids.has(p.id));
+  const list = all.filter((p) => !practice || p.practiceCode === practice);
+  const { p } = usePatient(selected);
   const [text, setText] = useState('');
   const [dirty, setDirty] = useState(false);
   const nurse = role === 'nurse';
+  const filed = list.filter((x) => x.note?.filedAt).length;
 
   useEffect(() => {
     if (!dirty) setText(p?.note?.text ?? '');
@@ -32,18 +36,35 @@ export function MonthEnd({ selected }: { selected: number | null }) {
       <div className="page-head">
         <h1>Month end · {state.clock.monthLabel}</h1>
         <p className="muted">
-          The system drafts each note from logged activity. Read it, copy it into the EHR, and mark it filed. {state.monthEnd.filed} of {state.monthEnd.total} filed.
+          The system drafts each note from logged activity. Read it, copy it into the practice's EHR, and mark it filed. {filed} of {list.length} filed
+          {practice ? ` at ${state.practices.find((x) => x.code === practice)?.name}` : ' across the portfolio'}.
           {!state.clock.afterMonthEnd && ' (It is not month end yet; drafts update as work is logged.)'}
         </p>
       </div>
       <div className="monthend-grid">
-        <Card title="Patients">
+        <Card
+          title="Patients"
+          actions={
+            <select className="input" value={practice} onChange={(e) => setPractice(e.target.value)} aria-label="Practice">
+              {state.practices.map((x) => (
+                <option key={x.code} value={x.code}>
+                  {x.name}
+                </option>
+              ))}
+              <option value="">All practices</option>
+            </select>
+          }
+        >
           <ul className="pick-list">
             {list.map((x) => (
               <li key={x.id}>
                 <button className={`pick ${x.id === selected ? 'on' : ''}`} onClick={() => go(`/month-end/${x.id}`)}>
                   <span>
-                    <strong>{x.name}</strong> <span className="muted small">{x.mrn} · {x.program?.toUpperCase()}</span>
+                    <strong>{x.name}</strong>{' '}
+                    <span className="muted small">
+                      {x.mrn} · {x.program?.toUpperCase()}
+                      {!practice ? ` · ${x.practiceCode}` : ''}
+                    </span>
                     <span className="small block">
                       {x.minutes} min · <BillingBadge b={x.billing} /> {x.billing.reason && <span className="muted">{x.billing.reason}</span>}
                     </span>
@@ -54,9 +75,17 @@ export function MonthEnd({ selected }: { selected: number | null }) {
             ))}
           </ul>
         </Card>
-        {!p || !p.note ? (
+        {selected == null ? (
           <Card>
             <Empty>Pick a patient to see the draft note.</Empty>
+          </Card>
+        ) : !p ? (
+          <Card>
+            <Loading />
+          </Card>
+        ) : !p.note ? (
+          <Card>
+            <Empty>{p.name} has no note this month.</Empty>
           </Card>
         ) : (
           <Card
@@ -66,11 +95,14 @@ export function MonthEnd({ selected }: { selected: number | null }) {
                 <a className="btn btn-small" href={`#/patient/${p.id}`}>
                   Patient month
                 </a>
+                <a className="btn btn-small" href={`#/audit/${p.id}`}>
+                  Audit packet
+                </a>
               </span>
             }
           >
             <p className="muted small">
-              {p.note.filedAt ? `Filed in EHR ${fmtDateTime(p.note.filedAt)}` : 'Not filed yet'}
+              {p.practice.name} · {p.note.filedAt ? `Filed in EHR ${fmtDateTime(p.note.filedAt)}` : 'Not filed yet'}
               {p.note.attestedAt ? ` · attested ${fmtDateTime(p.note.attestedAt)}` : ''}
               {p.note.changedSinceFiled ? ' · new activity since filing: update the filed note' : ''}
             </p>

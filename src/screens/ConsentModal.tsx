@@ -1,11 +1,15 @@
 import { useState } from 'react';
-import { useServerRealMs, useStore } from '../store';
+import { shortPhysician } from '../../shared/constants';
+import { usePatient, useServerRealMs, useStore } from '../store';
 import { Duration, Modal } from '../ui';
 
 export function ConsentModal({ patientId, onClose }: { patientId: number; onClose: () => void }) {
   const { state, act } = useStore();
   const real = useServerRealMs();
-  const p = state.patients.find((x) => x.id === patientId)!;
+  const { p: view } = usePatient(patientId);
+  const p = view ?? state.patients.find((x) => x.id === patientId)!;
+  const practice = view?.practice ?? state.practices.find((x) => x.id === p.practiceId)!;
+  const doc = shortPhysician(practice.physician);
   const t = state.timer;
   const running = t && t.patientId === patientId && t.activity === 'consent_call';
   const [x, setX] = useState({
@@ -53,8 +57,8 @@ export function ConsentModal({ patientId, onClose }: { patientId: number; onClos
       </div>
       <div className="script">
         <p className="say">
-          “Hi {p.first_name}, this is Rachel Okafor, a nurse at {state.practice.name}, Dr. Patel's office. Dr. Patel would like to offer you our care
-          management program: a monthly check-in on your health between visits, and help with medicines, appointments and follow-up.”
+          “Hi {p.first_name}, this is {p.careManager.replace(/, RN$/, '')}, a nurse with {practice.name}, {doc}'s office. {doc} would like to offer you our care management
+          program: a monthly check-in on your health between visits, and help with medicines, appointments and follow-up.”
         </p>
         <Item k="explainedAvailability" title="1. Availability" say="You can reach the practice any time, day or night, through our after-hours line, and we check in with you every month." />
         <Item
@@ -62,12 +66,12 @@ export function ConsentModal({ patientId, onClose }: { patientId: number; onClos
           title="2. Cost sharing"
           say="Medicare covers this service, but like other services a coinsurance or deductible may apply, usually about 20% of the monthly fee. Supplemental insurance may cover it."
         />
-        <Item k="explainedOnePractitioner" title="3. One practitioner" say="Only one practitioner can bill for this service each month, so Dr. Patel's office will be the one providing it." />
+        <Item k="explainedOnePractitioner" title="3. One practitioner" say={`Only one practitioner can bill for this service each month, so ${doc}'s office will be the one providing it.`} />
         <Item k="explainedRightToStop" title="4. Right to stop" say="You can stop at any time by telling us. Stopping takes effect at the end of the month." />
         <Item
           k="automatedCallsOk"
           title="Automated calls (number, purpose, how to stop)"
-          say={`Each month we may check in with an automated, recorded call from ${state.practice.phone}. It asks a few questions about your health. You can ask for a nurse at any time, or say "stop calling me" to end these calls. Is that OK?`}
+          say={`Each month we may check in with an automated, recorded call from ${practice.phone}. It asks a few questions about your health. You can ask for a nurse at any time, or say "stop calling me" to end these calls. Is that OK?`}
         />
         <Item k="textsOk" title="Texts" say={`May we also send you text reminders at ${p.phone}? Reply STOP to end them.`} />
         <p className="say">“Do you agree to join?”</p>

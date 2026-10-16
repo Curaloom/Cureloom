@@ -1,14 +1,27 @@
 import { useState } from 'react';
-import { defaultSetupFor, READING_ORDER, RULE_ORDER } from '../../shared/codes';
+import type { PatientView } from '../../shared/api';
+import { codeName, defaultSetupFor, READING_ORDER, RULE_ORDER } from '../../shared/codes';
 import { DEFAULT_TARGETS, READINGS, RULES } from '../../shared/rules';
 import type { Program, ReadingType, RuleCode, Targets } from '../../shared/types';
-import { useStore } from '../store';
-import { Modal } from '../ui';
+import { usePatient, useStore } from '../store';
+import { Loading, Modal } from '../ui';
 
 export function SetupModal({ patientId, onClose }: { patientId: number; onClose: () => void }) {
-  const { state, act } = useStore();
-  const p = state.patients.find((x) => x.id === patientId)!;
-  const defaults = defaultSetupFor(p.qualifying_codes);
+  const { p } = usePatient(patientId);
+  if (!p) {
+    return (
+      <Modal title="Call setup" onClose={onClose} wide>
+        <Loading />
+      </Modal>
+    );
+  }
+  return <SetupForm p={p} onClose={onClose} />;
+}
+
+function SetupForm({ p, onClose }: { p: PatientView; onClose: () => void }) {
+  const { act } = useStore();
+  const patientId = p.id;
+  const defaults = defaultSetupFor(p.patient.qualifying_codes);
   const s = p.setup;
   const [program, setProgram] = useState<Program | null>(p.program);
   const [readings, setReadings] = useState<ReadingType[]>(s?.readings ?? defaults.readings);
@@ -35,7 +48,7 @@ export function SetupModal({ patientId, onClose }: { patientId: number; onClose:
 
   return (
     <Modal title={`Call setup — ${p.name}`} onClose={onClose} wide>
-      <p className="muted small">Prefilled from the qualifying conditions: {p.codes.map((c) => `${c.code} ${c.name}`).join('; ')}.</p>
+      <p className="muted small">Prefilled from the qualifying conditions: {p.codes.map((c) => `${c} ${codeName(c)}`).join('; ')}.</p>
       <fieldset className="field">
         <legend>Program</legend>
         <label className={`choice ${program === 'ccm' ? 'on' : ''}`}>

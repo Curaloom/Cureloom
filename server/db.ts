@@ -2,13 +2,32 @@ import Database from 'better-sqlite3';
 
 export type DB = Database.Database;
 
-// The nine tables from the build brief, plus `demo` for the demo clock and
-// other prototype-only settings. A few columns go beyond the brief where the
-// walkthroughs need them (call scheduling, flag acknowledgement deadline,
-// task kind); each is marked below.
+// The nine tables from the build brief, plus `practice` for the operator's
+// client practices and `demo` for the demo clock and other prototype-only
+// settings. A few columns go beyond the brief where the walkthroughs need them
+// (call scheduling, flag acknowledgement deadline, task kind, eligibility
+// verification); each is marked below.
+
+/** Bump when the schema changes: an older database file is rebuilt from the seed. */
+export const SCHEMA_VERSION = 2;
+
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS practice (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  city TEXT NOT NULL,
+  state TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  physician TEXT NOT NULL,
+  care_manager TEXT NOT NULL,
+  simulated INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS patient (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  practice_id INTEGER NOT NULL REFERENCES practice(id),
+  care_manager TEXT NOT NULL,
   mrn TEXT NOT NULL UNIQUE,
   first_name TEXT NOT NULL,
   last_name TEXT NOT NULL,
@@ -26,7 +45,13 @@ CREATE TABLE IF NOT EXISTS patient (
   status TEXT NOT NULL CHECK (status IN ('eligible_unconfirmed', 'confirmed', 'consented', 'active',
     'ineligible', 'needs_visit', 'opted_out', 'paused')),
   ineligible_reason TEXT,
-  program TEXT CHECK (program IN ('ccm', 'apcm'))
+  program TEXT CHECK (program IN ('ccm', 'apcm')),
+  -- beyond the brief: eligibility verification and the documented risk basis
+  coverage_verified_on TEXT,
+  qmb_verified_on TEXT,
+  risk_note TEXT,
+  risk_note_by TEXT,
+  risk_note_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS consent (
@@ -108,7 +133,7 @@ CREATE TABLE IF NOT EXISTS time_entry (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   patient_id INTEGER NOT NULL REFERENCES patient(id),
   user TEXT NOT NULL,
-  activity TEXT NOT NULL CHECK (activity IN ('consent_call', 'nurse_call', 'ehr_chart_review', 'ehr_med_review',
+  activity TEXT NOT NULL CHECK (activity IN ('consent_call', 'nurse_call', 'call_review', 'ehr_chart_review', 'ehr_med_review',
     'ehr_care_plan_review', 'coordination', 'education', 'documentation', 'practitioner_review')),
   outcome TEXT,
   started_at TEXT NOT NULL,
@@ -146,7 +171,14 @@ CREATE TABLE IF NOT EXISTS demo (
 );
 
 CREATE INDEX IF NOT EXISTS event_patient ON event (patient_id, id);
+CREATE INDEX IF NOT EXISTS event_type ON event (type);
 CREATE INDEX IF NOT EXISTS call_patient ON call (patient_id);
+CREATE INDEX IF NOT EXISTS call_sched ON call (kind, status, scheduled_for);
+CREATE INDEX IF NOT EXISTS task_patient ON task (patient_id);
+CREATE INDEX IF NOT EXISTS flag_patient ON flag (patient_id);
+CREATE INDEX IF NOT EXISTS time_patient ON time_entry (patient_id);
+CREATE INDEX IF NOT EXISTS consent_patient ON consent (patient_id);
+CREATE INDEX IF NOT EXISTS patient_practice ON patient (practice_id);
 `;
 
 /** Tables in the order they can be cleared and refilled. */
@@ -160,12 +192,18 @@ export const TABLES = [
   'call_setup',
   'consent',
   'patient',
+  'practice',
   'demo',
 ] as const;
 
 export function openDb(file: string): DB {
   const db = new Database(file);
   if (file !== ':memory:') db.pragma('journal_mode = WAL');
+  if (Number(db.pragma('user_version', { simple: true })) !== SCHEMA_VERSION) {
+    // An older prototype database: drop it and let the service reseed.
+    for (const t of TABLES) db.exec(`DROP TABLE IF EXISTS ${t}`);
+    db.pragma(`user_version = ${SCHEMA_VERSION}`);
+  }
   db.exec(SCHEMA);
   return db;
 }

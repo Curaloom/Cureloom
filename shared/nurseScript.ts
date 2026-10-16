@@ -2,7 +2,7 @@
 // patient's October lines from the seed script where section 5 gives them
 // and a plain default reply everywhere else.
 
-import { PRACTICE } from './constants';
+import { firstName, shortPhysician } from './constants';
 import { READINGS, RULES } from './rules';
 import type { ReadingType, RuleCode } from './types';
 
@@ -26,10 +26,17 @@ export interface NurseStep {
 }
 
 export function nurseSteps(
-  ctx: { firstName: string; readings: ReadingType[]; symptoms: RuleCode[] },
+  ctx: {
+    firstName: string;
+    readings: ReadingType[];
+    symptoms: RuleCode[];
+    nurse: string;
+    practice: { phone: string; physician: string };
+  },
   script?: NurseScript,
 ): NurseStep[] {
   const first = ctx.firstName;
+  const doc = shortPhysician(ctx.practice.physician);
   const subj = { caregiver: false, name: first };
   const sc = script ?? {};
   const step = (key: string, label: string, question: string, scripted: string | undefined, fallback: string) => ({
@@ -43,7 +50,7 @@ export function nurseSteps(
     step(
       'opening',
       'Opening',
-      `Hi ${first}, this is Rachel, the nurse at Dr. Patel's office, calling for your monthly check-in. Is now still a good time?`,
+      `Hi ${first}, this is ${firstName(ctx.nurse)}, the nurse at ${doc}'s office, calling for your monthly check-in. Is now still a good time?`,
       sc.opening,
       "Yes, now's fine.",
     ),
@@ -72,7 +79,7 @@ export function nurseSteps(
     step(
       'close',
       'Close',
-      `Thanks, ${first}. I'll update Dr. Patel and follow up on anything we talked about. You can call us any time at ${PRACTICE.phone}.`,
+      `Thanks, ${first}. I'll update ${doc} and follow up on anything we talked about. You can call us any time at ${ctx.practice.phone}.`,
       sc.close,
       'Thank you. Bye.',
     ),

@@ -5,20 +5,24 @@ import { Badge, Card, Empty, money } from '../ui';
 
 export function Attestation() {
   const { state, role, act, say } = useStore();
-  const month = state.clock.month;
   const byId = new Map(state.patients.map((p) => [p.id, p]));
-  const urgent = state.patients.flatMap((p) => p.flags.filter((f) => f.level === 'urgent' && f.raised_at.startsWith(month)).map((f) => ({ p, f })));
-  const escalations = state.patients.flatMap((p) => p.tasks.filter((t) => t.kind === 'physician' && t.status === 'open').map((t) => ({ p, t })));
+  const urgent = state.attestation.urgent;
+  const escalations = state.attestation.escalations;
   const pending = state.attestation.pending.map((id) => byId.get(id)!);
   const toBill = pending.filter((p) => p.billing.awaitingAttestation);
-  const unfiled = state.monthEnd.total - state.monthEnd.filed;
+  const mine = state.patients.filter((p) => p.practiceId === state.live.id && p.inMonthEnd);
+  const filed = mine.filter((p) => p.note?.filedAt).length;
+  const unfiled = mine.length - filed;
   const physician = role === 'physician';
 
   return (
     <div className="stack">
       <div className="page-head">
         <h1>Monthly attestation · {state.clock.monthLabel}</h1>
-        <p className="muted">Signed by {state.staff.physician.name} after the nurse files the notes.</p>
+        <p className="muted">
+          {state.live.name}: signed by {state.live.physician}, the billing practitioner, after the care manager files the notes. Each client practice's physician signs for their own
+          patients.
+        </p>
       </div>
       <div className="grid2">
         <Card title={`Urgent flags this month (${urgent.length})`}>
@@ -34,21 +38,21 @@ export function Attestation() {
                 </tr>
               </thead>
               <tbody>
-                {urgent.map(({ p, f }) => (
-                  <tr key={f.id}>
+                {urgent.map((f, i) => (
+                  <tr key={i}>
                     <td>
-                      <a href={`#/patient/${p.id}`}>{p.name}</a>
+                      <a href={`#/patient/${f.patientId}`}>{f.name}</a>
                     </td>
                     <td className="small">
                       {f.summary}
                       {f.note && <div className="muted">Resolution: {f.note}</div>}
                     </td>
                     <td className="small nowrap">
-                      {fmtDateTime(f.raised_at)}
+                      {fmtDateTime(f.raisedAt)}
                       <br />
-                      {f.acknowledged_at ? fmtDateTime(f.acknowledged_at) : <Badge tone="danger">not acknowledged</Badge>}
+                      {f.acknowledgedAt ? fmtDateTime(f.acknowledgedAt) : <Badge tone="danger">✕ not acknowledged</Badge>}
                       <br />
-                      {f.resolved_at ? fmtDateTime(f.resolved_at) : <Badge tone="warn">open</Badge>}
+                      {f.resolvedAt ? fmtDateTime(f.resolvedAt) : <Badge tone="warn">open</Badge>}
                     </td>
                   </tr>
                 ))}
@@ -61,13 +65,13 @@ export function Attestation() {
             <Empty>Nothing waiting.</Empty>
           ) : (
             <ul className="tasks">
-              {escalations.map(({ p, t }) => (
-                <li key={t.id}>
+              {escalations.map((t) => (
+                <li key={t.taskId}>
                   <div>
-                    <a href={`#/patient/${p.id}`}>{p.name}</a>: {t.title.replace('Physician review requested: ', '')}
+                    <a href={`#/patient/${t.patientId}`}>{t.name}</a>: {t.title.replace('Physician review requested: ', '')}
                     <div className="muted small">{t.reason}</div>
                   </div>
-                  <button className="btn btn-small" disabled={!physician} onClick={() => act('closeTask', { taskId: t.id, note: 'Reviewed by physician' })}>
+                  <button className="btn btn-small" disabled={!physician} onClick={() => act('closeTask', { taskId: t.taskId, note: 'Reviewed by physician' })}>
                     Reviewed
                   </button>
                 </li>
@@ -78,7 +82,7 @@ export function Attestation() {
       </div>
       <Card title="Notes and patients to bill">
         <p>
-          Notes filed: <strong>{state.monthEnd.filed}</strong> of {state.monthEnd.total}.
+          Notes filed: <strong>{filed}</strong> of {mine.length}.
           {unfiled > 0 && <span className="warn-text"> {unfiled} not filed yet; those patients are not covered by this signature.</span>}
         </p>
         {!pending.length ? (

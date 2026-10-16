@@ -51,7 +51,7 @@ export function callSummary(c: Call, setup: CallSetup | null): string {
       return `${label} ${when} — opted out ("stop calling me")`;
     case 'escalated': {
       const f = callFindings(c, setup).filter((x) => x.level === 'urgent');
-      const esc = f.find((x) => x.escalation)?.escalation === '988' ? 'Told to call or text 988' : 'Told to call 911';
+      const esc = `${f.find((x) => x.escalation)?.escalation === '988' ? 'Advised 988' : 'Advised 911'}${c.kind === 'ai' ? '; live transfer to nurse requested' : ''}`;
       return `${label} ${when} — URGENT${by}: ${lcFirst(flagSummary(f))}. ${esc}.`;
     }
     default: {

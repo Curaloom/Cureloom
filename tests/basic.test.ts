@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { openDb } from '../server/db';
 import { Service } from '../server/service';
-import { buildState } from '../server/views';
+import { buildState, patientDetail } from '../server/views';
 
 function setup() {
   let real = 1_000_000;
@@ -51,10 +51,10 @@ test('roster rows with bad data are rejected with a reason', () => {
   assert.ok(up.rows.some((r) => r.errors.some((e) => e.includes('555-01XX'))));
 });
 
-test('only the practice manager confirms eligibility', () => {
+test('only the ops lead confirms eligibility', () => {
   const { svc, pid } = setup();
   svc.uploadRoster('manager', 'r.csv', svc.rosterCsv());
-  assert.throws(() => svc.confirmEligibility('nurse', pid('W08')), /Practice manager/);
+  assert.throws(() => svc.confirmEligibility('nurse', pid('W08')), /Ops lead/);
 });
 
 test('October AI run produces the scripted outcomes', () => {
@@ -80,8 +80,9 @@ test('October AI run produces the scripted outcomes', () => {
   for (const c of svc.callsOf(pid('W02')).filter((c) => c.kind === 'ai' && c.answered_by && c.started_at!.startsWith('2026-10'))) {
     assert.match(c.transcript.find((l) => l.who === 'ai')!.text, /automated call .* recorded/);
   }
-  // The urgent alert's 30-minute window starts when the compressed run finishes.
-  const urgent = buildState(svc).alerts[0];
+  // The live practice's urgent alert: its 30-minute window starts when the compressed run finishes.
+  const urgent = buildState(svc).alerts.find((a) => a.live)!;
+  assert.equal(urgent.mrn, 'W01');
   assert.ok(urgent.ackDueAt! > svc.now());
 });
 
@@ -145,16 +146,19 @@ test('time is floored to minutes, AI and unanswered calls never count, and the m
   assert.equal(mins('W09'), 10);
   assert.ok(svc.timeOf(pid('W09')).some((t) => t.activity === 'consent_call' && !t.counts));
 
+  // W08 and W09 joined from the roster this month: coverage is verified before claims go out.
+  svc.runEligibilityCheck('manager');
   svc.jumpToMonthEnd();
   let s = buildState(svc);
-  for (const id of s.monthEnd.patientIds) {
-    const p = s.patients.find((x) => x.id === id)!;
-    assert.match(p.note!.text, /AI time never counts|No calls this month|TIME LOG/);
-    svc.fileNote('nurse', id, p.note!.text);
+  const westfield = s.patients.filter((p) => p.practiceCode === 'WFM');
+  for (const p of westfield.filter((x) => x.inMonthEnd)) {
+    const note = patientDetail(svc, p.id).note!;
+    assert.match(note.text, /AI time never counts|No calls this month|TIME LOG/);
+    svc.fileNote('nurse', p.id, note.text);
   }
   svc.signAttestation('physician', s.attestation.text);
   s = buildState(svc);
-  const status = (m: string) => s.billing.rows.find((r) => r.mrn === m)!.billing;
+  const status = (m: string) => s.patients.find((r) => r.mrn === m)!.billing;
   for (const m of ['W02', 'W04', 'W10']) assert.deepEqual([status(m).status, status(m).code], ['ready', 'G0558']);
   for (const m of ['W01', 'W08']) assert.deepEqual([status(m).status, status(m).code], ['ready', 'G0557']);
   for (const m of ['W03', 'W06']) assert.deepEqual([status(m).status, status(m).code], ['ready', '99490']);
@@ -164,6 +168,7 @@ test('time is floored to minutes, AI and unanswered calls never count, and the m
   assert.equal(status('W14').reason, 'opted out, no service');
   assert.equal(status('W15').reason, 'paused, now Medicare Advantage');
   for (const m of ['W11', 'W12', 'W13']) assert.equal(status(m).status, 'not_enrolled');
-  assert.equal(s.billing.readyCount, 7);
-  assert.equal(s.billing.readyTotal, 591.54);
+  const ready = s.patients.filter((p) => p.practiceCode === 'WFM' && p.billing.status === 'ready');
+  assert.equal(ready.length, 7);
+  assert.equal(Math.round(ready.reduce((a, p) => a + p.billing.amount!, 0) * 100) / 100, 591.54);
 });

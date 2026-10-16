@@ -105,3 +105,23 @@ export function defaultSetupFor(codes: string[]): { readings: ReadingType[]; rul
     rules: RULE_ORDER.filter((r) => rules.has(r)),
   };
 }
+
+/**
+ * Operator policy (configurable): conditions that are chronic but rarely, on their own, put a
+ * patient "at significant risk of death, acute exacerbation or functional decline", which is the
+ * standard OIG's 2026 CCM audit (OAS-26-09-007) tests. A patient whose qualifying conditions
+ * include fewer than two outside this list needs the risk basis written down before billing.
+ */
+export const LOWER_ACUITY_CODES = new Set(['E78.5', 'E03.9', 'M19.90', 'M81.0']);
+
+export function riskReviewNeeded(codes: string[]): boolean {
+  const q = qualifyingCodes(codes);
+  return q.length >= 2 && q.filter((c) => !LOWER_ACUITY_CODES.has(c)).length < 2;
+}
+
+/** A plain list such as "hypertension and hyperlipidemia". */
+export function conditionList(codes: string[]): string {
+  const names = qualifyingCodes(codes).map((c) => QUALIFYING_CODES[c].condition.replace(/_/g, ' '));
+  const uniq = [...new Set(names)];
+  return uniq.length <= 1 ? uniq.join('') : `${uniq.slice(0, -1).join(', ')} and ${uniq[uniq.length - 1]}`;
+}

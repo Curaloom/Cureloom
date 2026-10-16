@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { RunItem } from '../../shared/api';
 import { aiAnswer, aiPrompt, aiStart, type AiContext, type AiInput, type AiState } from '../../shared/aiCall';
 import { toIso } from '../../shared/time';
-import { useDemoNowMs, useStore } from '../store';
+import { useDemoNowMs, usePatient, useStore } from '../store';
 import { Badge, Card, Empty } from '../ui';
 import { RunSummary } from './RunSummary';
 import { Transcript } from './Transcript';
@@ -10,13 +10,14 @@ import { Transcript } from './Transcript';
 export function Simulator() {
   const { state, act, busy } = useStore();
   const nowMs = useDemoNowMs();
-  const apcm = state.patients.filter((p) => p.program === 'apcm' && (p.status === 'active' || p.status === 'opted_out'));
+  const [practice, setPractice] = useState(state.live.code);
+  const apcm = state.patients.filter((p) => p.program === 'apcm' && (p.status === 'active' || p.status === 'opted_out') && (!practice || p.practiceCode === practice));
   const [pid, setPid] = useState<number | null>(null);
   const [inputs, setInputs] = useState<AiInput[]>([]);
   const [sim, setSim] = useState<AiState | null>(null);
   const [text, setText] = useState('');
   const [saved, setSaved] = useState<RunItem | null>(null);
-  const p = apcm.find((x) => x.id === pid) ?? null;
+  const { p } = usePatient(pid);
 
   const [ctx, setCtx] = useState<AiContext | null>(null);
 
@@ -26,6 +27,8 @@ export function Simulator() {
       firstName: p.first_name,
       lastName: p.last_name,
       phone: p.phone,
+      practice: { name: p.practice.name, phone: p.practice.phone, physician: p.practice.physician },
+      nurse: p.careManager,
       caregiverName: p.caregiver_name,
       readings: p.setup.readings,
       symptoms: p.setup.symptoms_to_watch,
@@ -57,13 +60,31 @@ export function Simulator() {
       <div className="page-head">
         <h1>AI call simulator</h1>
         <p className="muted">
-          You play the patient. The AI only asks scripted questions, discloses that it is automated and recorded, and routes concerns to the nurse. Urgent answers
-          end the call with a 911 (or 988) instruction. Nothing is dialled.
+          You play the patient. The AI calls in the practice's name, only asks scripted questions, discloses that it is automated and recorded, and routes concerns to the
+          care manager. An urgent answer gets a 911 (or 988) instruction, and the AI stays on the line while it requests a live transfer to the on-duty nurse. Nothing is
+          dialled.
         </p>
       </div>
       <div className="grid2">
         <Card title="Play one patient's call">
           <div className="row gap tight wrap">
+            <select
+              className="input"
+              value={practice}
+              aria-label="Practice"
+              onChange={(e) => {
+                setPractice(e.target.value);
+                setPid(null);
+                setSim(null);
+                setSaved(null);
+              }}
+            >
+              {state.practices.map((x) => (
+                <option key={x.code} value={x.code}>
+                  {x.name}
+                </option>
+              ))}
+            </select>
             <select
               className="input grow"
               value={pid ?? ''}
@@ -80,7 +101,7 @@ export function Simulator() {
                 </option>
               ))}
             </select>
-            <button className="btn btn-primary" disabled={!p || !p.ai.ok || busy || (sim !== null && !sim.done)} onClick={start}>
+            <button className="btn btn-primary" disabled={!p || p.id !== pid || !p.ai.ok || busy || (sim !== null && !sim.done)} onClick={start}>
               {sim?.done ? 'Call again' : 'Start call'}
             </button>
           </div>
@@ -128,14 +149,17 @@ export function Simulator() {
           )}
         </Card>
         <Card
-          title="Run October AI calls"
+          title="Run October AI check-ins"
           actions={
-            <button className="btn btn-primary" disabled={busy} onClick={() => act('runAiCalls')}>
-              Run October AI calls
+            <button className="btn btn-primary" disabled={busy || state.fastForwarded} onClick={() => act('runAiCalls')}>
+              Run October AI check-ins
             </button>
           }
         >
-          <p className="muted small">Applies every APCM patient's scripted October outcome from section 5, in date order (6–13 Oct). The demo clock moves to the last call.</p>
+          <p className="muted small">
+            Places every scheduled APCM check-in for October across all practices, in time order. Westfield's patients follow their scripted October answers; the simulated practices
+            get synthetic answers from a fixed seed, so every run is the same. The demo clock moves to the last call.
+          </p>
           {state.lastRun ? <RunSummary run={state.lastRun} /> : <Empty>Not run yet.</Empty>}
         </Card>
       </div>

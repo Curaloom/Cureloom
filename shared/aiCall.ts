@@ -4,7 +4,7 @@
 // The same machine drives the batch "Run October AI calls" and the tester's
 // simulator; the server replays the tester's inputs through it to record a call.
 
-import { PRACTICE } from './constants';
+import { firstName, shortPhysician } from './constants';
 import { emptyAnswers, mergeAnswers, parseUtterance } from './parse';
 import { RULES, READINGS } from './rules';
 import type { AnsweredBy, Answers, CallOutcome, ReadingType, RuleCode, TranscriptLine } from './types';
@@ -13,6 +13,10 @@ export interface AiContext {
   firstName: string;
   lastName: string;
   phone: string;
+  /** The patient's practice: the call is made in its name. */
+  practice: { name: string; phone: string; physician: string };
+  /** The operator's care manager for this patient, e.g. "Rachel Okafor, RN". */
+  nurse: string;
   /** e.g. "Joan Rowe (daughter)" */
   caregiverName: string | null;
   readings: ReadingType[];
@@ -69,7 +73,12 @@ export interface AiInput {
   text?: string;
 }
 
-export const DISCLOSURE = `This is an automated call from ${PRACTICE.name}, Dr. Anita Patel's office. This call is recorded.`;
+export function disclosure(ctx: AiContext): string {
+  return `This is an automated call from ${ctx.practice.name}, ${ctx.practice.physician}'s office. This call is recorded.`;
+}
+
+const office = (ctx: AiContext) => `${shortPhysician(ctx.practice.physician)}'s office`;
+const nurseFirst = (ctx: AiContext) => firstName(ctx.nurse);
 
 function caregiverFirst(ctx: AiContext): string {
   return ctx.caregiverName?.split(' ')[0] ?? 'there';
@@ -256,7 +265,7 @@ export function aiAnswer(prev: AiState, ctx: AiContext, input: AiInput): AiState
       s.transcript.push({ who: 'system', text: 'No answer after 6 rings. No voicemail left.' });
       return finish(s, 'no_answer', 'no_answer');
     }
-    s.transcript.push({ who: 'ai', text: DISCLOSURE, step: 'disclosure' });
+    s.transcript.push({ who: 'ai', text: disclosure(ctx), step: 'disclosure' });
     s.i += 1;
     s.transcript.push({ who: 'ai', text: question('identify', s, ctx), step: 'identify' });
     return s;
@@ -290,12 +299,12 @@ export function aiAnswer(prev: AiState, ctx: AiContext, input: AiInput): AiState
       s,
       'opted_out',
       'opted_out',
-      "Understood. We'll stop these automated calls. A nurse from Dr. Patel's office will call once to confirm. Goodbye.",
+      `Understood. We'll stop these automated calls. A nurse from ${office(ctx)} will call once to confirm. Goodbye.`,
     );
   }
   if (patch.wantsHuman || (step === 'disclose' && input.choice === 'nurse')) {
     s.answers.wantsHuman = true;
-    return finish(s, 'declined', 'wants_human', `Of course. I'll ask Rachel, ${yourNurse}, to call. Goodbye.`);
+    return finish(s, 'declined', 'wants_human', `Of course. I'll ask ${nurseFirst(ctx)}, ${yourNurse}, to call. Goodbye.`);
   }
   if (step === 'disclose' && (input.choice === 'later' || patch.callBackLater)) {
     s.answers.callBackLater = true;
@@ -304,16 +313,20 @@ export function aiAnswer(prev: AiState, ctx: AiContext, input: AiInput): AiState
 
   const urgent = urgentPresent(s.answers);
   if (urgent) {
+    // Never just hang up: advise 911 or 988, keep the line open and hand the
+    // call to a person. The protocol is the operator's, signed by its medical director.
     s.escalation = urgent.escalation;
     const line =
       urgent.escalation === '988'
-        ? `Thank you for telling me. Please call or text 988 now to reach the Suicide and Crisis Lifeline, or call 911 if you are in danger. I'm alerting ${yourNurse} and Dr. Patel's office right away. Goodbye.`
-        : `What you're describing could be serious. Please hang up and call 911 now. I'm alerting ${yourNurse} and Dr. Patel's office right away. Goodbye.`;
-    return finish(s, 'escalated', 'escalated', line);
+        ? `Thank you for telling me. You can call or text 988 right now to reach the Suicide and Crisis Lifeline, or call 911 if you are in danger. Please stay on the line: I'm connecting you to ${yourNurse} now, and ${office(ctx)} is being alerted.`
+        : `What you're describing could be serious and needs care right away. Please call 911 now. If you can't, stay on this line: I'm connecting you to ${yourNurse} now, and ${office(ctx)} is being alerted.`;
+    s.transcript.push({ who: 'ai', text: line });
+    s.transcript.push({ who: 'system', text: `Live transfer to the on-duty nurse requested; ${office(ctx)} alerted. (Simulated: nothing is dialled.)` });
+    return finish(s, 'escalated', 'escalated');
   }
 
   if (hasConcern(patch)) {
-    s.transcript.push({ who: 'ai', text: `Thank you. I'll make sure Rachel, ${yourNurse}, sees that today.` });
+    s.transcript.push({ who: 'ai', text: `Thank you. I'll make sure ${nurseFirst(ctx)}, ${yourNurse}, sees that today.` });
   }
 
   s.i += 1;
@@ -327,7 +340,7 @@ export function aiAnswer(prev: AiState, ctx: AiContext, input: AiInput): AiState
     s,
     'completed',
     'completed',
-    `Thank you, ${thanks}. Rachel, ${yourNurse}, will review this. If anything gets worse, call the office at ${PRACTICE.phone}, or 911 in an emergency. Goodbye.`,
+    `Thank you, ${thanks}. ${nurseFirst(ctx)}, ${yourNurse}, will review this. If anything gets worse, call the office at ${ctx.practice.phone}, or 911 in an emergency. Goodbye.`,
   );
 }
 

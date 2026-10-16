@@ -16,8 +16,23 @@ import type {
   TranscriptLine,
 } from './types';
 
+export interface Practice {
+  id: number;
+  code: string;
+  name: string;
+  city: string;
+  state: string;
+  phone: string;
+  physician: string;
+  care_manager: string;
+  simulated: boolean;
+}
+
 export interface Patient {
   id: number;
+  practice_id: number;
+  /** The operator's care manager responsible for the patient. */
+  care_manager: string;
   mrn: string;
   first_name: string;
   last_name: string;
@@ -35,6 +50,14 @@ export interface Patient {
   status: PatientStatus;
   ineligible_reason: string | null;
   program: Program | null;
+  /** Last date Medicare coverage (traditional vs Advantage) was checked. */
+  coverage_verified_on: string | null;
+  /** Last date QMB status was checked. G0558 needs it checked in the service month. */
+  qmb_verified_on: string | null;
+  /** Why the patient's conditions put them at significant risk, when the codes alone don't show it. */
+  risk_note: string | null;
+  risk_note_by: string | null;
+  risk_note_at: string | null;
 }
 
 export interface Consent {

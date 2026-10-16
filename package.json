@@ -2,7 +2,7 @@
   "name": "cureloom-v1-prototype",
   "version": "0.1.0",
   "private": true,
-  "description": "Workflow validation prototype: one simulated month of care management at one simulated practice.",
+  "description": "Operator demo: AI check-ins, the nurse exception queue and a billing pre-flight for a care-management operator's client practices, on synthetic data.",
   "type": "module",
   "scripts": {
     "start": "tsx server/index.ts",

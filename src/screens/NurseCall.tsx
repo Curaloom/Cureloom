@@ -6,8 +6,8 @@ import { emptyAnswers } from '../../shared/parse';
 import { assess, evaluateReading, levelOf, READINGS, RULES } from '../../shared/rules';
 import { fmtDateTime, fmtDuration } from '../../shared/time';
 import type { Answers, Finding, FlagLevel } from '../../shared/types';
-import { useServerRealMs, useStore } from '../store';
-import { Badge, Card, Duration, Empty } from '../ui';
+import { usePatientByCall, useServerRealMs, useStore } from '../store';
+import { Badge, Card, Duration, Empty, Loading } from '../ui';
 import { Transcript } from './Transcript';
 
 interface EndResult {
@@ -23,7 +23,7 @@ const PACE_MS = 300;
 export function NurseCall({ callId }: { callId: number }) {
   const { state, role, act } = useStore();
   const real = useServerRealMs();
-  const p = state.patients.find((x) => x.calls.some((c) => c.id === callId));
+  const { p, missing } = usePatientByCall(callId);
   const call = p?.calls.find((c) => c.id === callId);
   const [result, setResult] = useState<EndResult | null>(null);
   const [who, setWho] = useState<'patient' | 'caregiver'>('patient');
@@ -33,10 +33,23 @@ export function NurseCall({ callId }: { callId: number }) {
   const [playing, setPlaying] = useState(false);
   const stopPlay = useRef(false);
 
+  const setupKey = p?.setup ? JSON.stringify([p.setup.readings, p.setup.symptoms_to_watch]) : '';
   const steps = useMemo(
     () =>
-      p && p.setup ? nurseSteps({ firstName: p.first_name, readings: p.setup.readings, symptoms: p.setup.symptoms_to_watch }, p.script ?? undefined) : [],
-    [p?.id, p?.setup, p?.script],
+      p && p.setup
+        ? nurseSteps(
+            {
+              firstName: p.first_name,
+              readings: p.setup.readings,
+              symptoms: p.setup.symptoms_to_watch,
+              nurse: p.careManager,
+              practice: { phone: p.practice.phone, physician: p.practice.physician },
+            },
+            p.script ?? undefined,
+          )
+        : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [p?.id, setupKey, !!p?.script],
   );
   const transcript = call?.transcript ?? [];
   const answered = new Set(transcript.filter((l) => l.who !== 'nurse').map((l) => l.step));
@@ -47,7 +60,9 @@ export function NurseCall({ callId }: { callId: number }) {
 
   useEffect(() => () => void (stopPlay.current = true), []);
 
-  if (!p || !call) return <Empty>Call not found.</Empty>;
+  if (missing) return <Empty>Call not found.</Empty>;
+  if (!p) return <Loading />;
+  if (!call) return <Empty>Call not found.</Empty>;
 
   if (result || call.status === 'done') {
     return <CallResult p={p} call={call} result={result} />;
@@ -109,10 +124,11 @@ export function NurseCall({ callId }: { callId: number }) {
             <span>{p.phone}</span>
             {p.caregiver_name && (
               <span>
-                Caregiver: {p.caregiver_name}, {p.caregiver_phone}
+                Caregiver: {p.caregiver_name}, {p.patient.caregiver_phone}
               </span>
             )}
             <span>{p.program?.toUpperCase()}</span>
+            <span>{p.practice.name}</span>
             <a href={`#/patient/${p.id}`}>Patient month</a>
           </div>
         </div>

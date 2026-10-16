@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import type { EnrollBucket, PatientView } from '../../shared/api';
+import type { EnrollBucket, PatientSummary } from '../../shared/api';
+import { codeName } from '../../shared/codes';
 import { fmtDate } from '../../shared/time';
 import { useStore } from '../store';
 import { Badge, Card, Empty, StatusBadge } from '../ui';
@@ -18,9 +19,10 @@ export function Enroll() {
   const { state, role, act } = useStore();
   const [consentFor, setConsentFor] = useState<number | null>(null);
   const [setupFor, setSetupFor] = useState<number | null>(null);
-  const by = (b: EnrollBucket) => state.patients.filter((p) => p.enrollBucket === b);
+  const [practice, setPractice] = useState('');
+  const by = (b: EnrollBucket) => state.patients.filter((p) => p.enrollBucket === b && (!practice || p.practiceCode === practice));
 
-  function action(p: PatientView) {
+  function action(p: PatientSummary) {
     switch (p.enrollBucket) {
       case 'awaiting_confirmation':
         return role === 'manager' ? (
@@ -28,7 +30,7 @@ export function Enroll() {
             Confirm eligibility
           </button>
         ) : (
-          <span className="hint">Practice manager confirms</span>
+          <span className="hint">The ops lead confirms</span>
         );
       case 'needs_consent':
         return (
@@ -49,9 +51,19 @@ export function Enroll() {
 
   return (
     <div className="stack">
-      <div className="page-head">
-        <h1>Enroll</h1>
-        <p className="muted">New patients move through confirmation, consent and call setup. Active patients are on the Today queue.</p>
+      <div className="page-head row between wrap">
+        <div>
+          <h1>Enroll</h1>
+          <p className="muted">New patients move through confirmation, consent and call setup. Active patients are on the Today queue.</p>
+        </div>
+        <select className="input" value={practice} onChange={(e) => setPractice(e.target.value)} aria-label="Practice">
+          <option value="">All practices</option>
+          {state.practices.map((p) => (
+            <option key={p.code} value={p.code}>
+              {p.name}
+            </option>
+          ))}
+        </select>
       </div>
       {SECTIONS.map((s) => {
         const list = by(s.bucket);
@@ -78,10 +90,12 @@ export function Enroll() {
                       <td>
                         <a href={`#/patient/${p.id}`}>{p.name}</a>
                         <div className="muted small">
-                          {p.mrn} · {p.age}
+                          {p.mrn} · {p.age} · {p.practiceCode}
                         </div>
                       </td>
-                      <td className="small">{p.codes.map((c) => c.code).join(', ') || '—'}</td>
+                      <td className="small" title={p.codes.map(codeName).join('; ')}>
+                        {p.codes.join(', ') || '—'}
+                      </td>
                       <td>
                         {p.coverage === 'traditional' ? 'Traditional' : 'Medicare Advantage'}
                         {p.is_qmb && <Badge tone="info">QMB</Badge>}

@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import type { CallView, PatientView, StepView } from '../../shared/api';
-import { ACTIVITIES, type ActivityKey } from '../../shared/constants';
+import { codeName, LOWER_ACUITY_CODES } from '../../shared/codes';
+import { ACTIVITIES, CODE_LABEL, shortPhysician, type ActivityKey } from '../../shared/constants';
 import type { Flag } from '../../shared/model';
 import { fmtDate, fmtDateTime, fmtShort } from '../../shared/time';
 import { go } from '../router';
-import { useServerRealMs, useStore } from '../store';
-import { Badge, Card, Duration, Empty, StatusBadge } from '../ui';
+import { usePatient, useServerRealMs, useStore } from '../store';
+import { Badge, BillingBadge, Card, CheckState, Duration, Empty, listJoin, Loading, money, StatusBadge } from '../ui';
 import { ConsentModal } from './ConsentModal';
 import { SetupModal } from './SetupModal';
 import { Transcript } from './Transcript';
@@ -15,10 +16,11 @@ const OTHER: ActivityKey[] = ['coordination', 'education', 'documentation'];
 
 export function PatientMonth({ id }: { id: number }) {
   const { state, role, act } = useStore();
-  const p = state.patients.find((x) => x.id === id);
+  const { p, missing } = usePatient(id);
   const [consent, setConsent] = useState(false);
   const [setup, setSetup] = useState(false);
-  if (!p) return <Empty>No such patient.</Empty>;
+  if (missing) return <Empty>No such patient.</Empty>;
+  if (!p) return <Loading />;
   const nurse = role === 'nurse';
   const inCall = p.calls.find((c) => c.kind === 'nurse' && c.status === 'in_progress');
 
@@ -36,13 +38,20 @@ export function PatientMonth({ id }: { id: number }) {
           </h1>
           <div className="meta">
             <span>
+              <strong>{p.practice.name}</strong>
+              {p.simulated ? ' (simulated)' : ''} · {p.practice.physician} · care manager {p.careManager}
+            </span>
+          </div>
+          <div className="meta">
+            <span>
               {p.age} · DOB {fmtDate(p.dob)}
             </span>
             <span>{p.phone}</span>
             <span>{p.coverage === 'traditional' ? 'Traditional Medicare' : 'Medicare Advantage'}{p.is_qmb ? ', QMB' : ''}</span>
+            {p.preferred_language !== 'English' && <span>Prefers {p.preferred_language}</span>}
             {p.caregiver_name && (
               <span>
-                Caregiver: {p.caregiver_name}, {p.caregiver_phone}
+                Caregiver: {p.caregiver_name}, {p.patient.caregiver_phone}
               </span>
             )}
           </div>
@@ -58,6 +67,9 @@ export function PatientMonth({ id }: { id: number }) {
             <input type="checkbox" checked={p.prefers_human} disabled={!nurse} onChange={(e) => act('setPrefersHuman', { patientId: p.id, value: e.target.checked })} />
             Prefers a human
           </label>
+          <a className="btn btn-small" href={`#/audit/${p.id}`}>
+            Audit packet
+          </a>
           <a className="btn btn-small" href={`#/events?patient=${p.id}`}>
             Audit trail
           </a>
@@ -79,6 +91,8 @@ export function PatientMonth({ id }: { id: number }) {
           <CallsCard p={p} />
         </div>
         <aside className="stack">
+          <PreflightCard p={p} />
+          {(p.riskReview || p.patient.risk_note) && <RiskCard p={p} />}
           <TimerCard p={p} />
           <MinutesCard p={p} />
           <TasksCard p={p} />
@@ -544,9 +558,10 @@ function EscalateCard({ p }: { p: PatientView }) {
   const { role, act } = useStore();
   const [note, setNote] = useState('');
   if (!['active', 'opted_out'].includes(p.status)) return null;
+  const doc = shortPhysician(p.practice.physician);
   return (
     <Card title="Escalate to physician">
-      <textarea className="input" rows={2} placeholder="What should Dr. Patel review?" value={note} onChange={(e) => setNote(e.target.value)} disabled={role !== 'nurse'} />
+      <textarea className="input" rows={2} placeholder={`What should ${doc} review?`} value={note} onChange={(e) => setNote(e.target.value)} disabled={role !== 'nurse'} />
       <button
         className="btn btn-small"
         disabled={role !== 'nurse' || !note.trim()}
@@ -555,8 +570,108 @@ function EscalateCard({ p }: { p: PatientView }) {
           if (r.ok) setNote('');
         }}
       >
-        Send to Dr. Patel
+        Send to {doc}
       </button>
+    </Card>
+  );
+}
+
+/** The billing pre-flight for this patient-month: every check, with what it found. */
+function PreflightCard({ p }: { p: PatientView }) {
+  const b = p.billing;
+  if (b.status === 'not_enrolled') {
+    return (
+      <Card title="Billing pre-flight">
+        <p className="muted small">Not enrolled: {b.reason}</p>
+      </Card>
+    );
+  }
+  return (
+    <Card
+      title="Billing pre-flight"
+      actions={
+        <a className="btn btn-small" href={`#/audit/${p.id}`}>
+          Audit packet
+        </a>
+      }
+    >
+      <div className="row gap tight wrap">
+        <BillingBadge b={b} />
+        {b.code && (
+          <span className="small">
+            <span className="mono">{b.code}</span> {CODE_LABEL[b.code]} · {money(b.amount ?? null)}
+          </span>
+        )}
+      </div>
+      {b.reason && <p className="small warn-text">Held: {b.reason}</p>}
+      <ul className="checks">
+        {b.checks.map((c) => (
+          <li key={c.key} className={`check-${c.status}`}>
+            <CheckState c={c} />
+            <span>
+              <strong>{c.label}</strong>
+              <span className="muted small block">{c.detail}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+/** Lower-acuity conditions only: a clinician writes down the risk basis, or takes the patient off the program. */
+function RiskCard({ p }: { p: PatientView }) {
+  const { role, act } = useStore();
+  const [text, setText] = useState('');
+  const can = role === 'nurse' || role === 'physician';
+  const q = p.patient.qualifying_codes;
+  if (p.patient.risk_note) {
+    return (
+      <Card title="Risk basis">
+        <p className="small">{p.patient.risk_note}</p>
+        <p className="muted small">
+          Documented by {p.patient.risk_note_by} {fmtDateTime(p.patient.risk_note_at)}
+        </p>
+      </Card>
+    );
+  }
+  return (
+    <Card title="Risk basis needed" className="card-attention">
+      <p className="small">
+        The qualifying conditions are {listJoin(q.map((c) => `${codeName(c).toLowerCase()}${LOWER_ACUITY_CODES.has(c) ? ' (lower acuity)' : ''}`))}. Program rules need conditions that put the patient at
+        significant risk of death, acute exacerbation or functional decline. Write down why, or take the patient off the program. The claim is held until then.
+      </p>
+      <textarea
+        className="input"
+        rows={3}
+        placeholder="e.g. Severe knee osteoarthritis with two falls this year; uses a walker; lives alone."
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        disabled={!can}
+      />
+      <div className="row gap tight wrap">
+        <button
+          className="btn btn-small btn-primary"
+          disabled={!can || text.trim().length < 15}
+          onClick={async () => {
+            const r = await act('documentRiskBasis', { patientId: p.id, text });
+            if (r.ok) setText('');
+          }}
+        >
+          Document risk basis
+        </button>
+        <button
+          className="btn btn-small"
+          disabled={!can}
+          onClick={async () => {
+            if (!window.confirm(`Take ${p.name} off the program? The patient is paused and not billed.`)) return;
+            await act('markRiskNotMet', { patientId: p.id, note: text });
+          }}
+        >
+          Doesn't meet the standard
+        </button>
+      </div>
+      {!can && <p className="hint">The nurse or physician records this.</p>}
     </Card>
   );
 }
