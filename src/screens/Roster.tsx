@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { fmtDateTime } from '../../shared/time';
 import { useStore } from '../store';
-import { Badge, Card, CsvButton, Empty } from '../ui';
+import { Badge, Card, Empty } from '../ui';
 
 export function Roster() {
   const { state, role, act, say } = useStore();
@@ -47,13 +47,6 @@ export function Roster() {
             <button className="btn btn-primary" disabled={!canUpload} onClick={() => act('uploadSeedRoster').then((r) => r.ok && say('October roster uploaded.', 'ok'))}>
               Upload the October roster
             </button>
-            <button
-              className="btn"
-              disabled={!canUpload}
-              onClick={() => act('uploadSeedRoster', { name: 'roster-with-errors.csv' }).then((r) => r.ok && say('Sample with errors uploaded.', 'ok'))}
-            >
-              Upload a sample with errors
-            </button>
           </div>
           <input
             ref={input}
@@ -67,16 +60,20 @@ export function Roster() {
             }}
           />
           {!canUpload && <p className="hint">Switch to the Practice manager role to upload.</p>}
-          <div className="row gap tight wrap hint">
-            Seed files: <CsvButton name="october-roster.csv" label="october-roster.csv" small /> (the 15 patients)
-            <CsvButton name="roster-with-errors.csv" label="roster-with-errors.csv" small /> (rows that get rejected)
-          </div>
+          <p className="hint">
+            Files: <a href="/api/seed/october-roster.csv">october-roster.csv</a> (the 15 seed patients) ·{' '}
+            <a href="/api/seed/roster-with-errors.csv">roster-with-errors.csv</a> (shows rejected rows)
+          </p>
         </div>
       </Card>
       <Card
         title={up ? `Last upload: ${up.filename}` : 'Last upload'}
         actions={
-          up && up.rejected > 0 ? <CsvButton name="roster-errors.csv" label="Download error list" /> : null
+          up && up.rejected > 0 ? (
+            <a className="btn" href="/api/roster-errors.csv">
+              Download error list
+            </a>
+          ) : null
         }
       >
         {!up ? (

@@ -16,8 +16,7 @@ import { Queue } from './screens/Queue';
 import { Roster } from './screens/Roster';
 import { Simulator } from './screens/Simulator';
 import { useDemoNowMs, useServerRealMs, useStore, useStoreMaybe, useTick } from './store';
-import { ConfirmButton, Countdown, Duration, Modal } from './ui';
-import { STANDALONE } from './transport';
+import { Countdown, Duration, Modal } from './ui';
 import { RunSummary } from './screens/RunSummary';
 import type { RunView } from '../shared/api';
 
@@ -147,10 +146,7 @@ function DemoBar() {
         </span>
         <div>
           <strong>Cureloom</strong>
-          <small>
-            Prototype · {state.practice.name}
-            {STANDALONE ? ' · runs and saves in this browser' : ''}
-          </small>
+          <small>Prototype · {state.practice.name}</small>
         </div>
       </div>
       <div className="demo-group" role="group" aria-label="Role">
@@ -208,23 +204,23 @@ function DemoBar() {
         >
           Save checkpoint
         </button>
-        <ConfirmButton
+        <button
           className="btn-demo"
           disabled={busy || !state.checkpoint.savedAt}
           title={state.checkpoint.demoAt ? `Saved at demo time ${fmtDateTime(state.checkpoint.demoAt)}` : 'No checkpoint yet'}
-          confirmLabel="Click again: discard work since then"
-          onConfirm={async () => {
+          onClick={async () => {
+            if (!window.confirm('Restore the saved checkpoint? Everything since then is discarded.')) return;
             const r = await act('restoreCheckpoint');
             if (r.ok) say('Checkpoint restored.', 'ok');
           }}
         >
           Restore checkpoint
-        </ConfirmButton>
-        <ConfirmButton
+        </button>
+        <button
           className="btn-demo danger"
           disabled={busy}
-          confirmLabel="Click again to reset everything"
-          onConfirm={async () => {
+          onClick={async () => {
+            if (!window.confirm('Reset to seed? This clears everything done in the demo.')) return;
             const r = await act('reset');
             if (r.ok) {
               setRun(null);
@@ -234,7 +230,7 @@ function DemoBar() {
           }}
         >
           Reset to seed
-        </ConfirmButton>
+        </button>
       </div>
       {pickDate && (
         <Modal title="Move the demo date forward" onClose={() => setPickDate(false)}>

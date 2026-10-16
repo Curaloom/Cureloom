@@ -5,13 +5,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { openDb } from '../server/db';
-import { fileSeed } from '../server/nodeStorage';
 import { Service } from '../server/service';
 import { buildState } from '../server/views';
 
 function setup() {
   let real = 1_000_000;
-  const svc = new Service({ db: openDb(':memory:'), seed: fileSeed(), realNow: () => real });
+  const svc = new Service({ db: openDb(':memory:'), realNow: () => real });
   svc.reset();
   const tick = (ms: number) => (real += ms);
   const pid = (mrn: string) => svc.patientByMrn(mrn)!.id;
