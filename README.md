@@ -20,6 +20,17 @@ HOST=0.0.0.0 PORT=3000 npm run serve
 
 Other commands: `npm test` runs the basic checks in `tests/`, and `npm run typecheck`.
 
+### Browser-only build (no server)
+
+```bash
+npm run build:standalone   # writes dist-standalone/cureloom.html
+```
+
+This build runs the same server logic in the browser on an in-memory SQLite (the pure-JavaScript sql.js build) and bundles everything into one HTML file. That makes the app easy to share as a link or open from disk.
+
+- Demo state is saved in that browser's local storage, so each tester has their own copy.
+- Pages hosted where downloads are blocked show CSVs in a dialog to copy instead.
+
 ## The demo bar
 
 The bar is at the top of every screen and holds:

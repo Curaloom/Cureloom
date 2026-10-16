@@ -1,6 +1,6 @@
 import { CODE_LABEL, FEES, type BillingCode } from '../../shared/constants';
 import { useStore } from '../store';
-import { BillingBadge, Card, money } from '../ui';
+import { BillingBadge, Card, CsvButton, money } from '../ui';
 
 export function Billing() {
   const { state } = useStore();
@@ -28,9 +28,7 @@ export function Billing() {
           <h1>Billing list · {state.clock.monthLabel}</h1>
           <p className="muted">Recalculated after every change. Ready needs the program rule met, the note filed in the EHR, and the physician's attestation.</p>
         </div>
-        <a className="btn btn-primary" href="/api/billing.csv">
-          Download CSV
-        </a>
+        <CsvButton name="billing.csv" label="Download CSV" primary />
       </div>
       <Card title="Summary">
         <table className="table">

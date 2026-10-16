@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { EventRow } from '../../shared/model';
 import { fmtDateTime } from '../../shared/time';
 import { go } from '../router';
+import { getEvents } from '../transport';
 import { useStore } from '../store';
 import { Card, Empty } from '../ui';
 
@@ -12,9 +13,7 @@ export function Events({ patientId }: { patientId: number | null }) {
   const count = state.counts.events;
 
   useEffect(() => {
-    const q = patientId != null ? `?patientId=${patientId}` : '';
-    fetch(`/api/events${q}`)
-      .then((r) => r.json())
+    getEvents({ patientId })
       .then(setRows)
       .catch(() => setRows([]));
   }, [patientId, count]);

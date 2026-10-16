@@ -2,14 +2,14 @@ import { useEffect, useState } from 'react';
 import type { EventRow } from '../../shared/model';
 import { fmtDateTime } from '../../shared/time';
 import { useStore } from '../store';
+import { getEvents } from '../transport';
 import { Badge, Card, Empty } from '../ui';
 
 export function Outbox() {
   const { state } = useStore();
   const [rows, setRows] = useState<EventRow[]>([]);
   useEffect(() => {
-    fetch('/api/events?prefix=outbox.')
-      .then((r) => r.json())
+    getEvents({ prefix: 'outbox.' })
       .then((r: EventRow[]) => setRows(r.reverse()))
       .catch(() => setRows([]));
   }, [state.counts.outbox]);

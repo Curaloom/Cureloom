@@ -1,6 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   aiCallSeconds,
   replay,
@@ -64,7 +61,7 @@ import type {
   TranscriptLine,
 } from '../shared/types';
 import { evaluateBilling } from './billing';
-import { TABLES, type DB } from './db';
+import { TABLES, type DB } from './schema';
 import { eligibility, parseRoster, type RosterRow } from './roster';
 
 export class UserError extends Error {
@@ -90,7 +87,7 @@ interface Timer {
   user: string;
 }
 
-interface SeptemberSeed {
+export interface SeptemberSeed {
   active: {
     mrn: string;
     program: Program;
@@ -118,14 +115,31 @@ export interface Script {
   nurse: Record<string, NurseScript>;
 }
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_SEED_DIR = path.resolve(HERE, '../seed');
+/** Where the seed files come from: the seed/ folder on the server, or bundled into the browser build. */
+export interface SeedSource {
+  rosterCsv(name: string): string;
+  september(): SeptemberSeed;
+  script(): Script;
+}
+
+export interface Snapshot {
+  savedAt: string;
+  demoAt: string;
+  tables: Record<string, Record<string, unknown>[]>;
+}
+
+/** Holds one saved checkpoint of the whole demo state. */
+export interface CheckpointStore {
+  save(s: Snapshot): void;
+  load(): Snapshot | null;
+  info(): { savedAt: string; demoAt: string } | null;
+}
 
 export interface ServiceOptions {
   db: DB;
+  seed: SeedSource;
   realNow?: () => number;
-  seedDir?: string;
-  checkpointPath?: string;
+  checkpoints?: CheckpointStore;
 }
 
 const ENROLLED: PatientStatus[] = ['consented', 'active', 'paused', 'opted_out'];
@@ -163,16 +177,16 @@ export function flagSummary(findings: Finding[]): string {
 
 export class Service {
   readonly db: DB;
-  readonly seedDir: string;
-  readonly checkpointPath: string | null;
+  private readonly seed: SeedSource;
+  private readonly checkpoints: CheckpointStore | null;
   private realNow: () => number;
   private scriptCache: Script | null = null;
 
   constructor(o: ServiceOptions) {
     this.db = o.db;
+    this.seed = o.seed;
     this.realNow = o.realNow ?? Date.now;
-    this.seedDir = o.seedDir ?? DEFAULT_SEED_DIR;
-    this.checkpointPath = o.checkpointPath ?? null;
+    this.checkpoints = o.checkpoints ?? null;
   }
 
   // ───────────────────────────── settings, clock, log
@@ -400,14 +414,12 @@ export class Service {
   }
 
   script(): Script {
-    if (!this.scriptCache) {
-      this.scriptCache = JSON.parse(fs.readFileSync(path.join(this.seedDir, 'october-script.json'), 'utf8'));
-    }
-    return this.scriptCache!;
+    if (!this.scriptCache) this.scriptCache = this.seed.script();
+    return this.scriptCache;
   }
 
   rosterCsv(name = 'october-roster.csv'): string {
-    return fs.readFileSync(path.join(this.seedDir, name), 'utf8');
+    return this.seed.rosterCsv(name);
   }
 
   aiAllowed(p: Patient): { ok: boolean; reason: string | null } {
@@ -454,7 +466,7 @@ export class Service {
   }
 
   private seedSeptember(): void {
-    const seed: SeptemberSeed = JSON.parse(fs.readFileSync(path.join(this.seedDir, 'september.json'), 'utf8'));
+    const seed = this.seed.september();
     const { rows } = parseRoster(this.rosterCsv(), dateOf(DEMO_START));
     const byMrn = new Map(rows.filter((r) => r.value).map((r) => [r.value!.mrn, r.value!]));
     for (const a of seed.active) {
@@ -543,40 +555,37 @@ export class Service {
   }
 
   saveCheckpoint(): { savedAt: string } {
-    if (!this.checkpointPath) throw new UserError('Checkpoints are not available here.');
+    if (!this.checkpoints) throw new UserError('Checkpoints are not available here.');
     if (this.timer()) throw new UserError('Stop the running timer before saving a checkpoint.');
-    fs.mkdirSync(path.dirname(this.checkpointPath), { recursive: true });
-    fs.rmSync(this.checkpointPath, { force: true });
-    this.db.prepare('VACUUM INTO ?').run(this.checkpointPath);
-    const meta = { savedAt: new Date(this.realNow()).toISOString(), demoAt: this.now() };
-    fs.writeFileSync(`${this.checkpointPath}.json`, JSON.stringify(meta));
-    this.tx(() => this.log('demo.checkpoint', `Checkpoint saved at demo time ${fmtDateTime(meta.demoAt)}.`, null, TESTER));
-    return { savedAt: meta.savedAt };
+    const tables: Snapshot['tables'] = {};
+    for (const t of TABLES) tables[t] = this.db.prepare(`SELECT * FROM ${t}`).all() as Record<string, unknown>[];
+    const snap: Snapshot = { savedAt: new Date(this.realNow()).toISOString(), demoAt: this.now(), tables };
+    this.checkpoints.save(snap);
+    this.tx(() => this.log('demo.checkpoint', `Checkpoint saved at demo time ${fmtDateTime(snap.demoAt)}.`, null, TESTER));
+    return { savedAt: snap.savedAt };
   }
 
   checkpointInfo(): { savedAt: string | null; demoAt: string | null } {
-    if (!this.checkpointPath || !fs.existsSync(`${this.checkpointPath}.json`)) return { savedAt: null, demoAt: null };
-    return JSON.parse(fs.readFileSync(`${this.checkpointPath}.json`, 'utf8'));
+    return this.checkpoints?.info() ?? { savedAt: null, demoAt: null };
   }
 
   restoreCheckpoint(): void {
-    const info = this.checkpointInfo();
-    if (!this.checkpointPath || !info.demoAt || !fs.existsSync(this.checkpointPath))
-      throw new UserError('No checkpoint saved yet.');
-    this.db.prepare('ATTACH DATABASE ? AS cp').run(this.checkpointPath);
-    try {
-      this.db.transaction(() => {
-        for (const t of TABLES) {
-          this.db.prepare(`DELETE FROM main.${t}`).run();
-          this.db.prepare(`INSERT INTO main.${t} SELECT * FROM cp.${t}`).run();
+    const snap = this.checkpoints?.load();
+    if (!snap) throw new UserError('No checkpoint saved yet.');
+    this.db.transaction(() => {
+      for (const t of TABLES) {
+        this.db.prepare(`DELETE FROM ${t}`).run();
+        for (const row of snap.tables[t] ?? []) {
+          const cols = Object.keys(row);
+          this.db
+            .prepare(`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`)
+            .run(...cols.map((c) => row[c]));
         }
-        this.setNow(toMs(info.demoAt!));
-        this.setKv('timer', null);
-        this.log('demo.checkpoint', `Checkpoint restored (demo time ${fmtDateTime(info.demoAt!)}).`, null, TESTER);
-      })();
-    } finally {
-      this.db.prepare('DETACH DATABASE cp').run();
-    }
+      }
+      this.setNow(toMs(snap.demoAt));
+      this.setKv('timer', null);
+      this.log('demo.checkpoint', `Checkpoint restored (demo time ${fmtDateTime(snap.demoAt)}).`, null, TESTER);
+    })();
   }
 
   // ───────────────────────────── demo clock commands

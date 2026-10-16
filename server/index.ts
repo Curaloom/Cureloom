@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createApi } from './app';
 import { openDb } from './db';
+import { fileCheckpoints, fileSeed } from './nodeStorage';
 import { Service } from './service';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,7 +15,7 @@ const host = process.env.HOST ?? 'localhost';
 
 fs.mkdirSync(DATA, { recursive: true });
 const db = openDb(path.join(DATA, 'cureloom.db'));
-const svc = new Service({ db, checkpointPath: path.join(DATA, 'checkpoint.db') });
+const svc = new Service({ db, seed: fileSeed(), checkpoints: fileCheckpoints(path.join(DATA, 'checkpoint.json')) });
 if (svc.isEmpty()) svc.reset();
 
 const app = express();

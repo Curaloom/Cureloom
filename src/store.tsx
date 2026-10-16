@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppState } from '../shared/api';
 import type { Role } from '../shared/types';
+import { getState, postAction } from './transport';
 
 export interface ActResult<T = unknown> {
   ok: boolean;
@@ -55,8 +56,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const r = await fetch('/api/state');
-      if (r.ok && pending.current === 0) accept(await r.json());
+      const s = await getState();
+      if (pending.current === 0) accept(s);
     } catch {
       /* server restarting; next poll retries */
     }
@@ -67,13 +68,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       pending.current += 1;
       setBusy(true);
       try {
-        const r = await fetch(`/api/action/${name}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-role': role },
-          body: JSON.stringify(body),
-        });
-        const j = await r.json();
-        if (!r.ok) {
+        const r = await postAction(name, role, body);
+        const j = r.body;
+        if (r.status !== 200) {
           say(j.error ?? 'Something went wrong.');
           return { ok: false, error: j.error };
         }
