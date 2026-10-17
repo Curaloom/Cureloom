@@ -2,7 +2,7 @@
 // from scratch. Plain text so the nurse can paste it into the EHR.
 
 import { codeName } from '../shared/codes';
-import { ACTIVITIES, CCM_MINUTES, CODE_LABEL, PRACTICE, STAFF } from '../shared/constants';
+import { ACTIVITIES, CCM_MINUTES, CODE_LABEL, COMPLEX_MINUTES, PRACTICE, STAFF } from '../shared/constants';
 import type { Patient } from '../shared/model';
 import {
   ageOn,
@@ -16,7 +16,7 @@ import {
   monthLabel,
   toMs,
 } from '../shared/time';
-import { billingCode } from './billing';
+import { billingCode, billingLines } from './billing';
 import { answerLines, callSeconds, reached } from './describe';
 import { fullName, type Service } from './service';
 
@@ -44,7 +44,9 @@ export function buildNote(svc: Service, p: Patient, month: string): string {
   const flags = svc.flagsOf(p.id).filter((f) => inMonth(f.raised_at, month));
   const time = svc.timeOf(p.id, month);
   const tasks = svc.tasksOf(p.id).filter((t) => inMonth(t.created_at, month) || t.status === 'open');
-  const code = billingCode(p);
+  const code = billingCode(svc, p);
+  const plan = svc.approvedPlan(p.id);
+  const mc = svc.monthCloseOf(p.id, month);
   const L: string[] = [];
 
   L.push(`CARE MANAGEMENT MONTHLY NOTE — ${monthLabel(month)}`);
@@ -55,13 +57,16 @@ export function buildNote(svc: Service, p: Patient, month: string): string {
   if (p.status !== 'active') L.push(`Status: ${p.status.replace(/_/g, ' ')}${p.ineligible_reason ? ` (${p.ineligible_reason})` : ''}`);
   L.push(`Qualifying conditions: ${p.qualifying_codes.map((c) => `${c} ${codeName(c)}`).join('; ')}`);
   if (consent) {
-    const how = consent.method === 'at_visit' ? 'at the office visit' : 'by nurse phone call';
+    const how =
+      consent.method === 'at_visit' ? 'at the office visit' : consent.method === 'digital_link' ? 'by signed consent link' : 'by nurse phone call';
     L.push(
       `Consent: ${how} on ${fmtDate(consent.consent_date)}; automated calls ${consent.automated_calls_ok ? 'OK' : 'not OK'}; texts ${consent.texts_ok ? 'OK' : 'not OK'}.${consent.revoked_at ? ` Revoked ${fmtDate(consent.revoked_at)}.` : ''}`,
     );
   }
   if (p.caregiver_name) L.push(`Caregiver: ${p.caregiver_name}, ${p.caregiver_phone ?? 'no phone on file'}`);
-  if (setup?.ehr_plan_reviewed_on) L.push(`Care plan: last reviewed in the EHR on ${fmtDate(setup.ehr_plan_reviewed_on)}.`);
+  if (plan) L.push(`Care plan: v${plan.version} approved by ${plan.approved_by} (NPI ${plan.approver_npi}) on ${fmtDate(plan.approved_at)}.`);
+  else L.push('Care plan: not yet approved by the physician.');
+  if (setup?.ehr_plan_reviewed_on) L.push(`EHR care plan last reviewed on ${fmtDate(setup.ehr_plan_reviewed_on)}.`);
 
   L.push('');
   L.push('MONTHLY CONTACT');
@@ -146,13 +151,22 @@ export function buildNote(svc: Service, p: Patient, month: string): string {
   L.push('PROGRAM REQUIREMENT');
   if (p.program === 'ccm') {
     const m = floorMinutes(counted);
+    const complex = mc?.complexity === 'complex';
+    const lines = billingLines({ program: 'ccm', minutes: m, complexity: mc?.complexity ?? 'standard', conditions: svc.conditionCount(p), qmb: p.is_qmb }, svc.settings().fees);
+    const codes = lines.map((l) => (l.units > 1 ? `${l.code} ×${l.units}` : l.code)).join(' + ');
     L.push(
       `  CCM: ${CCM_MINUTES} minutes of clinical staff time in the month. Counted: ${m} min — ${m >= CCM_MINUTES ? `meets ${CCM_MINUTES} minutes` : `under ${CCM_MINUTES} minutes, so not billed for CCM this month`}.`,
     );
+    if (complex) {
+      L.push(
+        `  Complexity: moderate/high medical decision making marked by ${mc!.complexity_by} on ${fmtShort(mc!.complexity_at)}; complex CCM applies at ${COMPLEX_MINUTES} minutes.`,
+      );
+    }
+    if (codes) L.push(`  Claim lines: ${codes}.`);
   } else if (p.program === 'apcm') {
     const contact = calls.find((c) => reached(c));
     L.push(
-      `  APCM: a completed contact and care management service in the month; no time requirement. Completed contact: ${contact ? `yes (${fmtShort(contact.started_at)}, ${contact.kind === 'ai' ? 'AI check-in' : 'nurse call'})` : 'no'}.`,
+      `  APCM (${code ? `${code} — ${CODE_LABEL[code]}` : 'tier not set'}): a completed contact and care management service in the month; no time requirement. Completed contact: ${contact ? `yes (${fmtShort(contact.started_at)}, ${contact.kind === 'ai' ? 'AI check-in' : 'nurse call'})` : 'no'}.`,
     );
   }
   L.push('');

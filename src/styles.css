@@ -30,6 +30,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -1074,6 +1078,207 @@ ul.plain li + li {
   padding: 12px 14px;
   border-left: 4px solid var(--accent);
   background: var(--surface-2);
+}
+
+/* tabs */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 12px;
+  font: inherit;
+  font-weight: 550;
+  color: var(--muted);
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+.tab.on {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.tab .count {
+  margin-left: 6px;
+  background: #eef1f4;
+  color: #44515e;
+}
+.tab.on .count {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* stat tiles */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+.kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  box-shadow: var(--shadow);
+}
+.kpi .label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.kpi .value {
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+.kpi .sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+.kpi.primary {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.kpi.primary .value {
+  color: var(--accent);
+}
+
+/* column mapper */
+.mapping {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px 16px;
+  margin: 8px 0 12px;
+}
+.mapping label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.mapping .sample {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mapping .missing select {
+  border-color: var(--danger);
+}
+
+/* care plan document */
+.plan-doc {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+.plan-doc h3 {
+  font-size: 13px;
+  margin: 8px 0 4px;
+}
+.plan-doc h3:first-child {
+  margin-top: 0;
+}
+.plan-doc ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.hash {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  word-break: break-all;
+  color: var(--muted);
+}
+pre.audit {
+  white-space: pre-wrap;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+}
+
+/* clinical profile */
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+.trend {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.trend .pt {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.trend .pt.in_range {
+  border-color: #b9dcc7;
+  background: var(--ok-soft);
+}
+.trend .pt.above,
+.trend .pt.below {
+  border-color: #f0d29e;
+  background: var(--warn-soft);
+}
+.log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.log li {
+  display: grid;
+  grid-template-columns: 96px 90px minmax(0, 1fr);
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid #edf1f5;
+  font-size: 13px;
+}
+.queue-items {
+  margin: 0;
+  padding-left: 16px;
+}
+.lines {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.btn.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.lbl {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.lbl > .badge {
+  align-self: flex-start;
+}
+h3 {
+  font-size: 13px;
+  margin: 12px 0 6px;
 }
 
 @media (max-width: 1100px) {

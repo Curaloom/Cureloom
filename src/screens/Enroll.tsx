@@ -7,15 +7,20 @@ import { ConsentModal } from './ConsentModal';
 import { SetupModal } from './SetupModal';
 
 const SECTIONS: { bucket: EnrollBucket; title: string; help: string }[] = [
-  { bucket: 'awaiting_confirmation', title: 'Flagged eligible — awaiting practice confirmation', help: 'The system flags 2+ qualifying codes, traditional Medicare, and a visit in the last 12 months. The practice confirms with a click.' },
-  { bucket: 'needs_consent', title: 'Confirmed — no consent yet', help: 'Consent is usually taken at the office visit and arrives in the roster. Otherwise the nurse calls with the script on screen.' },
-  { bucket: 'needs_setup', title: 'Consented — no call setup yet', help: 'Pick the readings to ask, the symptoms to watch, the last EHR care plan review date, and the program.' },
+  {
+    bucket: 'awaiting_confirmation',
+    title: 'Eligible — awaiting Ops review',
+    help: 'The roster determination proposes CCM or an APCM tier from the payer and the chronic ICD-10 codes. Ops approves, holds or rejects each row in the opportunity matrix.',
+  },
+  { bucket: 'needs_consent', title: 'Approved — no consent yet', help: 'Consent is usually taken at the office visit and arrives in the roster. Otherwise the nurse sends a consent link or calls with the script on screen.' },
+  { bucket: 'needs_setup', title: 'Consented — no call setup yet', help: 'Pick the readings to ask, the symptoms to watch, the last EHR care plan review date, and the program. Saving compiles the care plan.' },
+  { bucket: 'needs_care_plan', title: 'Call setup done — care plan awaiting physician approval', help: 'No calls are scheduled until the physician approves the care plan.' },
   { bucket: 'not_eligible', title: 'Not eligible', help: '' },
   { bucket: 'stopped', title: 'Paused or opted out', help: '' },
 ];
 
 export function Enroll() {
-  const { state, role, act } = useStore();
+  const { state, role } = useStore();
   const [consentFor, setConsentFor] = useState<number | null>(null);
   const [setupFor, setSetupFor] = useState<number | null>(null);
   const by = (b: EnrollBucket) => state.patients.filter((p) => p.enrollBucket === b);
@@ -24,11 +29,19 @@ export function Enroll() {
     switch (p.enrollBucket) {
       case 'awaiting_confirmation':
         return role === 'manager' ? (
-          <button className="btn btn-primary btn-small" onClick={() => act('confirmEligibility', { patientId: p.id })}>
-            Confirm eligibility
-          </button>
+          <a className="btn btn-primary btn-small" href="#/roster">
+            Review in the matrix
+          </a>
         ) : (
-          <span className="hint">Practice manager confirms</span>
+          <span className="hint">Ops reviews in the opportunity matrix</span>
+        );
+      case 'needs_care_plan':
+        return role === 'physician' ? (
+          <a className="btn btn-primary btn-small" href="#/physician">
+            Review care plan
+          </a>
+        ) : (
+          <span className="hint">{p.draftPlan ? `v${p.draftPlan.version} with the physician` : 'Returned: update the call setup'}</span>
         );
       case 'needs_consent':
         return (
@@ -51,7 +64,7 @@ export function Enroll() {
     <div className="stack">
       <div className="page-head">
         <h1>Enroll</h1>
-        <p className="muted">New patients move through confirmation, consent and call setup. Active patients are on the Today queue.</p>
+        <p className="muted">New patients move through Ops review, consent, call setup and physician care plan approval. Active patients are on the Today queue.</p>
       </div>
       {SECTIONS.map((s) => {
         const list = by(s.bucket);
@@ -66,7 +79,7 @@ export function Enroll() {
                   <tr>
                     <th>Patient</th>
                     <th>Conditions</th>
-                    <th>Coverage</th>
+                    <th>Payer</th>
                     <th>Last visit</th>
                     <th>{s.bucket === 'needs_setup' ? 'Consent' : 'Status'}</th>
                     <th />
@@ -82,9 +95,9 @@ export function Enroll() {
                         </div>
                       </td>
                       <td className="small">{p.codes.map((c) => c.code).join(', ') || '—'}</td>
-                      <td>
-                        {p.coverage === 'traditional' ? 'Traditional' : 'Medicare Advantage'}
-                        {p.is_qmb && <Badge tone="info">QMB</Badge>}
+                      <td className="small">
+                        {p.payerLabel}
+                        {p.is_qmb && !/QMB/.test(p.payerLabel) && <Badge tone="info">QMB</Badge>}
                       </td>
                       <td>{fmtDate(p.last_visit_date)}</td>
                       <td className="small">

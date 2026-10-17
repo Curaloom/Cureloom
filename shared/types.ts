@@ -1,10 +1,16 @@
 export type Role = 'nurse' | 'physician' | 'manager';
 export type Program = 'ccm' | 'apcm';
-export type Coverage = 'traditional' | 'advantage';
+/** Payer class: traditional Medicare, Medicare Advantage, a participating value-based payer, or anything else. */
+export type Coverage = 'traditional' | 'advantage' | 'vbc' | 'other';
+export type Sex = 'M' | 'F' | 'U';
+export type OpsDecision = 'approved' | 'rejected' | 'held';
+/** The physician's medical decision making mark for a CCM month. */
+export type Complexity = 'standard' | 'complex';
 export type PatientStatus =
   | 'eligible_unconfirmed'
   | 'confirmed'
   | 'consented'
+  | 'plan_review'
   | 'active'
   | 'ineligible'
   | 'needs_visit'

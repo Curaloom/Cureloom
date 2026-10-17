@@ -12,6 +12,7 @@ import { NurseCall } from './screens/NurseCall';
 import { Outbox } from './screens/Outbox';
 import { PatientMonth } from './screens/PatientMonth';
 import { Patients } from './screens/Patients';
+import { Physician } from './screens/Physician';
 import { Queue } from './screens/Queue';
 import { Roster } from './screens/Roster';
 import { Simulator } from './screens/Simulator';
@@ -28,14 +29,15 @@ const NAV: Record<Role, { to: string; label: string }[]> = {
     { to: 'month-end', label: 'Month end' },
   ],
   physician: [
+    { to: 'physician', label: 'Care plans & escalations' },
     { to: 'attestation', label: 'Attestation' },
     { to: 'patients', label: 'All patients' },
-    { to: 'billing', label: 'Billing list' },
+    { to: 'billing', label: 'Billing' },
   ],
   manager: [
-    { to: 'roster', label: 'Roster upload' },
+    { to: 'roster', label: 'Roster & opportunity' },
+    { to: 'billing', label: 'Billing reconciliation' },
     { to: 'enroll', label: 'Enroll' },
-    { to: 'billing', label: 'Billing list' },
     { to: 'patients', label: 'All patients' },
   ],
 };
@@ -46,7 +48,7 @@ const TESTER_NAV = [
   { to: 'outbox', label: 'Outbox' },
 ];
 
-const HOME: Record<Role, string> = { nurse: 'queue', physician: 'attestation', manager: 'roster' };
+const HOME: Record<Role, string> = { nurse: 'queue', physician: 'physician', manager: 'roster' };
 
 export function App() {
   const store = useStoreMaybe();
@@ -88,6 +90,9 @@ function Shell() {
     case 'attestation':
       body = <Attestation />;
       break;
+    case 'physician':
+      body = <Physician />;
+      break;
     case 'billing':
       body = <Billing />;
       break;
@@ -122,7 +127,7 @@ function Shell() {
           ))}
         </div>
       </nav>
-      <TimerPill hideFor={current === 'patient' ? Number(rest[0]) : current === 'call' ? -1 : null} />
+      <TimerPill hideFor={current === 'patient' ? Number(rest[0]) : current === 'call' ? -1 : current === 'physician' ? -2 : null} />
       <main className="main">{body}</main>
       {toast && <div className={`toast toast-${toast.kind}`}>{toast.text}</div>}
     </div>
@@ -299,13 +304,20 @@ function AlertBanner() {
 }
 
 function TimerPill({ hideFor }: { hideFor: number | null }) {
-  const { state } = useStore();
+  const { state, role } = useStore();
   const real = useServerRealMs();
   useTick(250);
-  const t = state.timer;
-  if (!t || hideFor === t.patientId || (hideFor === -1 && t.callId)) return null;
+  // Each role sees its own timer: the physician's escalation timer, or the nurse's.
+  const t = role === 'physician' ? state.physicianTimer : state.timer;
+  if (!t || hideFor === t.patientId || (hideFor === -1 && t.callId) || (hideFor === -2 && t.taskId)) return null;
   const secs = Math.max(0, ((real - t.startedRealMs) / 1000) * t.speed);
-  const href = t.callId && t.activity === 'nurse_call' ? `#/call/${t.callId}` : t.activity === 'consent_call' ? '#/enroll' : `#/patient/${t.patientId}`;
+  const href = t.taskId
+    ? '#/physician'
+    : t.callId && t.activity === 'nurse_call'
+      ? `#/call/${t.callId}`
+      : t.activity === 'consent_call'
+        ? '#/enroll'
+        : `#/patient/${t.patientId}`;
   return (
     <a className="timer-pill" href={href}>
       <span className="dot" /> {t.activityLabel} · {t.patientName} · <Duration seconds={secs} />

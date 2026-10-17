@@ -18,7 +18,7 @@ const svc = new Service({ db, checkpointPath: path.join(DATA, 'checkpoint.db') }
 if (svc.isEmpty()) svc.reset();
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(createApi(svc));
 
 if (prod) {

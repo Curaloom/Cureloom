@@ -1,4 +1,4 @@
-import type { Role } from './types';
+import type { Program, Role } from './types';
 
 export const PRACTICE = {
   name: 'Westfield Family Medicine',
@@ -30,22 +30,75 @@ export const WORKDAY_END_HOUR = 18;
 
 export const ACK_WINDOW_MINUTES = 30;
 export const CCM_MINUTES = 20;
+/** CCM add-on 99439: each further full 20 minutes, at most two a month. */
+export const CCM_ADDON_MINUTES = 20;
+export const CCM_ADDON_MAX = 2;
+/** Complex CCM 99487 needs 60 minutes; add-on 99489 for each further full 30. */
+export const COMPLEX_MINUTES = 60;
+export const COMPLEX_ADDON_MINUTES = 30;
 export const AI_MAX_ATTEMPTS = 3;
 export const AI_RETRY_BUSINESS_DAYS = 2;
 export const AI_CALL_HOUR = '10:00:00';
+/** The "care not yet delivered" queue opens on this day of the month. */
+export const CARE_QUEUE_FROM_DAY = 20;
 
-export type BillingCode = '99490' | 'G0557' | 'G0558';
+export type BillingCode = '99490' | '99439' | '99487' | '99489' | 'G0556' | 'G0557' | 'G0558';
 
-export const FEES: Record<BillingCode, number> = {
+export const BILLING_CODES: BillingCode[] = ['99490', '99439', '99487', '99489', 'G0556', 'G0557', 'G0558'];
+export const ADD_ON_CODES: BillingCode[] = ['99439', '99489'];
+
+/**
+ * The practice's fee schedule. 99490, G0557 and G0558 are the V1 figures;
+ * the other four are placeholders to verify against the CY2026 physician fee
+ * schedule. Ops edits all of them in billing settings.
+ */
+export const DEFAULT_FEES: Record<BillingCode, number> = {
   '99490': 66.13,
+  '99439': 51.71,
+  '99487': 143.92,
+  '99489': 77.09,
+  G0556: 17.36,
   G0557: 53.78,
   G0558: 117.24,
 };
 
+export const PLACEHOLDER_FEES: BillingCode[] = ['99439', '99487', '99489', 'G0556'];
+
 export const CODE_LABEL: Record<BillingCode, string> = {
   '99490': 'CCM, first 20 min clinical staff',
-  G0557: 'APCM, 2+ chronic conditions',
-  G0558: 'APCM, QMB with 2+ chronic conditions',
+  '99439': 'CCM, each additional 20 min',
+  '99487': 'Complex CCM, first 60 min',
+  '99489': 'Complex CCM, each additional 30 min',
+  G0556: 'APCM Level 1, one condition or fewer',
+  G0557: 'APCM Level 2, 2+ chronic conditions',
+  G0558: 'APCM Level 3, QMB with 2+ chronic conditions',
+};
+
+export interface BillingSettings {
+  fees: Record<BillingCode, number>;
+  /** Box 24J: the supervising physician who renders the service. */
+  renderingNpi: string;
+  /** Box 33a: the practice's group NPI. */
+  billingNpi: string;
+  /** Box 24B: 11 office, 12 home. */
+  placeOfService: '11' | '12';
+  /** Box 24D modifier, empty unless a payer asks for one. */
+  modifier: string;
+  /** What the matrix proposes for traditional Medicare, 2+ conditions, not QMB. */
+  twoPlusDefault: Program;
+  /** Payer names that count as participating value-based payers (APCM-eligible). */
+  valueBasedPayers: string[];
+}
+
+/** Fictional NPIs that pass the Luhn check. */
+export const DEFAULT_BILLING_SETTINGS: BillingSettings = {
+  fees: DEFAULT_FEES,
+  renderingNpi: '1543210987',
+  billingNpi: '1765432103',
+  placeOfService: '11',
+  modifier: '',
+  twoPlusDefault: 'ccm',
+  valueBasedPayers: ['Westfield ACO REACH'],
 };
 
 export const PROGRAM_LABEL = { ccm: 'CCM', apcm: 'APCM' } as const;
@@ -133,10 +186,10 @@ export const ACTIVITIES: Record<
     manual: true,
   },
   practitioner_review: {
-    label: 'Practitioner review',
+    label: 'Physician review',
     ehr: false,
     counts: true,
-    outcomes: ['Reviewed', 'Plan changed'],
+    outcomes: ['Reviewed', 'Plan changed', 'Directive issued', 'Orders updated'],
     manual: true,
   },
 };

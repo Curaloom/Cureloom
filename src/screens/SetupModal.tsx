@@ -10,7 +10,9 @@ export function SetupModal({ patientId, onClose }: { patientId: number; onClose:
   const p = state.patients.find((x) => x.id === patientId)!;
   const defaults = defaultSetupFor(p.qualifying_codes);
   const s = p.setup;
-  const [program, setProgram] = useState<Program | null>(p.program);
+  const firstAllowed = p.programOptions.find((o) => !o.block)?.program ?? null;
+  const start = p.program && !p.programOptions.find((o) => o.program === p.program)?.block ? p.program : (p.proposed_program ?? firstAllowed);
+  const [program, setProgram] = useState<Program | null>(start);
   const [readings, setReadings] = useState<ReadingType[]>(s?.readings ?? defaults.readings);
   const [symptoms, setSymptoms] = useState<RuleCode[]>(s?.symptoms_to_watch ?? defaults.rules);
   const [targets, setTargets] = useState<Targets>(s?.targets ?? DEFAULT_TARGETS);
@@ -35,22 +37,29 @@ export function SetupModal({ patientId, onClose }: { patientId: number; onClose:
 
   return (
     <Modal title={`Call setup — ${p.name}`} onClose={onClose} wide>
-      <p className="muted small">Prefilled from the qualifying conditions: {p.codes.map((c) => `${c.code} ${c.name}`).join('; ')}.</p>
+      <p className="muted small">
+        Prefilled from the chronic conditions: {p.conditions.map((c) => `${c.code} ${c.name}`).join('; ')}. Saving compiles a care plan for{' '}
+        {state.staff.physician.name} to approve{p.status === 'active' ? ' (the approved version stays in effect until then)' : '; calls start once it is approved'}.
+      </p>
       <fieldset className="field">
-        <legend>Program</legend>
-        <label className={`choice ${program === 'ccm' ? 'on' : ''}`}>
-          <input type="radio" name="program" checked={program === 'ccm'} onChange={() => setProgram('ccm')} />
-          <span>
-            <strong>CCM (99490)</strong> — the nurse makes the monthly call; billed only with 20 real staff minutes in the month.
-          </span>
-        </label>
-        <label className={`choice ${program === 'apcm' ? 'on' : ''}`}>
-          <input type="radio" name="program" checked={program === 'apcm'} onChange={() => setProgram('apcm')} />
-          <span>
-            <strong>APCM ({p.is_qmb ? 'G0558, QMB' : 'G0557'})</strong> — the AI makes the monthly check-in call; no time rule, needs a completed contact.
-            {!autoOk && <em className="warn-text"> This consent has no automated-call permission, so the monthly call will be a nurse task.</em>}
-          </span>
-        </label>
+        <legend>Program{p.proposed_program ? ` (Ops proposed ${p.proposed_program.toUpperCase()})` : ''}</legend>
+        {p.programOptions.map((o) => (
+          <label key={o.program} className={`choice ${program === o.program ? 'on' : ''}`} title={o.block ?? ''}>
+            <input type="radio" name="program" checked={program === o.program} disabled={!!o.block} onChange={() => setProgram(o.program)} />
+            <span>
+              <strong>
+                {o.tier} ({o.code})
+              </strong>{' '}
+              {o.program === 'ccm'
+                ? '— the nurse makes the monthly call; 99490 at 20 staff minutes, 99439 per further 20; complex CCM if the physician marks the month.'
+                : '— the AI makes the monthly check-in call; no time rule, needs a completed contact.'}
+              {o.block && <em className="muted"> Not available: {o.block}.</em>}
+              {o.program === 'apcm' && !o.block && !autoOk && (
+                <em className="warn-text"> This consent has no automated-call permission, so the monthly call will be a nurse task.</em>
+              )}
+            </span>
+          </label>
+        ))}
       </fieldset>
       <div className="grid2">
         <fieldset className="field">
@@ -117,7 +126,7 @@ export function SetupModal({ patientId, onClose }: { patientId: number; onClose:
           Cancel
         </button>
         <button className="btn btn-primary" disabled={!program} onClick={save}>
-          {p.status === 'active' ? 'Save call setup' : 'Save and activate'}
+          {p.status === 'active' ? 'Save call setup' : 'Save and send the care plan for approval'}
         </button>
       </div>
     </Modal>

@@ -8,24 +8,39 @@ import type {
   AttestationRecord,
   BriefView,
   CallView,
+  ClinicalProfile,
   EnrollBucket,
   NoteView,
+  NurseQueueItem,
+  NurseQueues,
+  OpportunityBucket,
+  OpportunityRow,
+  OpsView,
   PatientView,
+  PhysicianView,
+  ProgramOption,
   QueueCategory,
   QueueRow,
   RosterUploadView,
   RunView,
   StepView,
+  TimerView,
 } from '../shared/api';
-import { codeName } from '../shared/codes';
-import { ACTIVITIES, CCM_MINUTES, MONTH_END, PRACTICE, PROGRAM_LABEL, STAFF } from '../shared/constants';
+import { codeName, CONDITION_SETUP } from '../shared/codes';
+import { ACTIVITIES, CARE_QUEUE_FROM_DAY, CCM_MINUTES, MONTH_END, PRACTICE, PROGRAM_LABEL, STAFF } from '../shared/constants';
+import { distinctConditions, lookupChronic, type Condition } from '../shared/icd10';
 import type { Patient } from '../shared/model';
-import { READINGS } from '../shared/rules';
+import { baseCode, programBlock, tierLabel } from '../shared/program';
+import { READINGS, RULES } from '../shared/rules';
 import { ageOn, dateOf, floorMinutes, fmtDate, fmtDateTime, fmtShort, inMonth, monthLabel, monthOf, addDays } from '../shared/time';
+import type { Program } from '../shared/types';
 import { billingFor } from './billing';
+import { setupGaps, verifyChain } from './carePlan';
 import { callFindings, callSeconds, callSummary, readingResults, reached } from './describe';
+import { preflightView, reconciliation } from './ledger';
 import { buildNote, monthEndPatients } from './note';
-import { fullName, type Service } from './service';
+import { classifyPayer } from './payer';
+import { fullName, type Service, type TimerSlot } from './service';
 
 export const QUEUE_ORDER: QueueCategory[] = ['urgent', 'concern', 'unreached', 'ccm_due', 'tasks', 'review'];
 const QUEUE_LABEL: Record<QueueCategory, string> = {
@@ -54,6 +69,8 @@ function enrollBucket(p: Patient): EnrollBucket | null {
       return 'needs_consent';
     case 'consented':
       return 'needs_setup';
+    case 'plan_review':
+      return 'needs_care_plan';
     case 'ineligible':
     case 'needs_visit':
       return 'not_eligible';
@@ -103,7 +120,6 @@ export function buildState(svc: Service): AppState {
         acknowledgedAt: f.acknowledged_at,
       };
     });
-  const t = svc.timer();
   const billingRows = views.map((v) => ({ patientId: v.id, mrn: v.mrn, name: v.name, program: v.program, billing: v.billing }));
   const ready = billingRows.filter((r) => r.billing.status === 'ready');
   const records = svc.kv<AttestationRecord[]>('attestations', []).filter((r) => r.month === month);
@@ -124,20 +140,15 @@ export function buildState(svc: Service): AppState {
       monthLabel: monthLabel(month),
       afterMonthEnd: now >= MONTH_END,
     },
-    timer: t
-      ? {
-          patientId: t.patientId,
-          patientName: fullName(svc.patient(t.patientId)),
-          activity: t.activity,
-          activityLabel: ACTIVITIES[t.activity].label,
-          startedAt: t.startedAt,
-          startedRealMs: t.startedReal,
-          speed: t.speed,
-          callId: t.callId,
-        }
-      : null,
+    timer: timerView(svc, 'nurse'),
+    physicianTimer: timerView(svc, 'physician'),
     patients: views,
     queue,
+    queues: nurseQueues(svc, views, now, month),
+    ops: opsView(svc, patients, now),
+    physician: physicianView(svc, views, month),
+    preflight: preflightView(svc),
+    settings: svc.settings(),
     alerts,
     roster: svc.kv<RosterUploadView | null>('lastUpload', null),
     lastRun: svc.kv<RunView | null>('lastRun', null),
@@ -155,6 +166,297 @@ export function buildState(svc: Service): AppState {
     checkpoint: svc.checkpointInfo(),
     counts: { events: counts.events, outbox: counts.outbox ?? 0 },
   };
+}
+
+function timerView(svc: Service, slot: TimerSlot): TimerView | null {
+  const t = svc.timer(slot);
+  if (!t) return null;
+  return {
+    patientId: t.patientId,
+    patientName: fullName(svc.patient(t.patientId)),
+    activity: t.activity,
+    activityLabel: ACTIVITIES[t.activity].label,
+    startedAt: t.startedAt,
+    startedRealMs: t.startedReal,
+    speed: t.speed,
+    callId: t.callId,
+    taskId: t.taskId ?? null,
+  };
+}
+
+function programOptions(svc: Service, p: Patient): ProgramOption[] {
+  const n = svc.conditionCount(p);
+  const fees = svc.settings().fees;
+  return (['ccm', 'apcm'] as Program[]).map((program) => {
+    const code = baseCode(program, n, p.is_qmb);
+    return { program, code, tier: tierLabel(code), fee: fees[code], block: programBlock(program, p.coverage, n) };
+  });
+}
+
+function bucketOf(p: Patient): OpportunityBucket {
+  switch (p.status) {
+    case 'eligible_unconfirmed':
+      return p.ops_decision === 'held' ? 'held' : 'review';
+    case 'confirmed':
+    case 'consented':
+    case 'plan_review':
+      return 'approved';
+    case 'ineligible':
+      return p.ops_decision === 'rejected' ? 'rejected' : 'not_eligible';
+    case 'needs_visit':
+      return 'not_eligible';
+    default:
+      return 'enrolled';
+  }
+}
+
+export function opsView(svc: Service, patients: Patient[], now: string): OpsView {
+  const settings = svc.settings();
+  const matrix = svc.icdMatrix();
+  const last = svc.kv<RosterUploadView | null>('lastUpload', null);
+  const uploaded = new Set(last?.mrns ?? []);
+  const rows: OpportunityRow[] = patients.map((p) => {
+    const program = p.program ?? p.proposed_program;
+    const n = distinctConditions(p.qualifying_codes, matrix).length;
+    const code = program ? baseCode(program, n, p.is_qmb) : null;
+    const payer = classifyPayer(p.insurance_name, settings.valueBasedPayers);
+    return {
+      patientId: p.id,
+      mrn: p.mrn,
+      name: fullName(p),
+      dob: p.dob,
+      age: ageOn(p.dob, now),
+      sex: p.sex,
+      insuranceName: p.insurance_name,
+      insuranceId: p.insurance_id,
+      payerLabel: payer.label,
+      coverage: p.coverage,
+      isQmb: p.is_qmb,
+      codes: p.diagnosis_codes.map((c) => ({ code: c, name: codeName(c), chronic: !!lookupChronic(c, matrix) })),
+      conditions: n,
+      program,
+      code,
+      tier: tierLabel(code),
+      confidence: p.confidence,
+      reasons: p.confidence_reasons,
+      monthly: code ? settings.fees[code] : 0,
+      bucket: bucketOf(p),
+      status: p.status,
+      reason: p.ineligible_reason,
+      decision: p.ops_decision,
+      decidedAt: p.ops_decided_at,
+      note: p.ops_note,
+      options: programOptions(svc, p),
+      inLastUpload: uploaded.has(p.mrn),
+    };
+  });
+  const sum = (list: OpportunityRow[]) => Math.round(list.reduce((s, r) => s + r.monthly, 0) * 100) / 100;
+  const approved = rows.filter((r) => r.bucket === 'approved' || (r.bucket === 'enrolled' && r.status === 'active'));
+  const pending = rows.filter((r) => r.bucket === 'review' || r.bucket === 'held');
+  return {
+    preview: svc.rosterPreview(),
+    matrix: rows,
+    emrr: {
+      approved: sum(approved),
+      approvedCount: approved.length,
+      pending: sum(pending),
+      pendingCount: pending.length,
+      rejectedCount: rows.filter((r) => r.bucket === 'rejected').length,
+      notEligibleCount: rows.filter((r) => r.bucket === 'not_eligible').length,
+    },
+    icd: { groups: new Set(matrix.map((m) => m.condition)).size, prefixes: matrix.length },
+  };
+}
+
+function physicianView(svc: Service, views: PatientView[], month: string): PhysicianView {
+  const carePlans = views
+    .filter((v) => v.draftPlan)
+    .map((v) => ({
+      plan: v.draftPlan!,
+      patientId: v.id,
+      name: v.name,
+      mrn: v.mrn,
+      status: v.status,
+      previous: v.carePlan,
+      gaps: setupGaps(svc, svc.patient(v.id)),
+    }));
+  const escalations = views.flatMap((v) =>
+    v.tasks
+      .filter((t) => t.kind === 'physician' && t.status === 'open')
+      .map((t) => ({
+        taskId: t.id,
+        patientId: v.id,
+        name: v.name,
+        mrn: v.mrn,
+        program: v.program,
+        request: t.title.replace('Physician review requested: ', ''),
+        from: t.reason,
+        createdAt: t.created_at,
+        minutes: v.minutes,
+        complexity: v.billing.complexity,
+        flags: v.brief.flags.map((f) => ({ level: f.level, summary: f.summary, state: f.state })),
+        readings: v.brief.readings.map((r) => ({ label: r.label, value: r.value, target: r.target, status: r.status })),
+        billing: v.billing.status === 'ready' ? `ready, ${v.billing.lines.map((l) => l.code).join(' + ')}` : (v.billing.reason ?? v.billing.status),
+      })),
+  );
+  const closed = views
+    .flatMap((v) =>
+      v.tasks
+        .filter((t) => t.kind === 'physician' && t.status === 'done' && inMonth(t.closed_at, month))
+        .map((t) => ({ taskId: t.id, patientId: v.id, name: v.name, title: t.title.replace('Physician review requested: ', ''), note: t.close_note, closedAt: t.closed_at })),
+    )
+    .sort((a, b) => (b.closedAt ?? '').localeCompare(a.closedAt ?? ''));
+  const broken: PhysicianView['chain']['broken'] = [];
+  let approvals = 0;
+  for (const v of views) {
+    const r = verifyChain(svc.carePlansOf(v.id));
+    approvals += r.approvals;
+    if (!r.ok) broken.push({ patientId: v.id, name: v.name, version: r.brokenAt! });
+  }
+  return { carePlans, escalations, closed, chain: { ok: !broken.length, approvals, broken } };
+}
+
+function nurseQueues(svc: Service, views: PatientView[], now: string, month: string): NurseQueues {
+  const item = (v: PatientView, items: string[], extra: Partial<NurseQueueItem> = {}): NurseQueueItem => ({
+    patientId: v.id,
+    name: v.name,
+    mrn: v.mrn,
+    program: v.program ? PROGRAM_LABEL[v.program] : v.proposed_program ? `${PROGRAM_LABEL[v.proposed_program]} (proposed)` : '—',
+    items,
+    minutes: v.minutes,
+    ...extra,
+  });
+
+  const consent = views
+    .filter((v) => v.status === 'confirmed')
+    .map((v) => {
+      const last = svc.lastConsentAttempt(v.id);
+      const linkSent = svc.events({ patientId: v.id, prefix: 'consent.link_sent' }).length > 0;
+      return item(v, [last ? `Last attempt ${fmtDateTime(last.at)}: ${last.how}` : 'Not contacted yet'], { lastAttempt: last, linkSent });
+    })
+    .sort((a, b) => (a.lastAttempt?.at ?? '').localeCompare(b.lastAttempt?.at ?? '') || a.mrn.localeCompare(b.mrn));
+
+  const careOpensOn = `${month}-${String(CARE_QUEUE_FROM_DAY).padStart(2, '0')}`;
+  const care: NurseQueueItem[] = [];
+  if (dateOf(now) >= careOpensOn) {
+    for (const v of views.filter((x) => x.status === 'active')) {
+      const missing: string[] = [];
+      if (!v.completedContact) missing.push(v.program === 'ccm' ? 'No completed nurse contact this month' : 'No completed contact this month');
+      if (v.program === 'ccm') {
+        for (const s of v.steps.filter((x) => ['chart', 'meds', 'plan'].includes(x.key) && x.state === 'open')) missing.push(`${s.label} not done`);
+        const open = v.tasks.filter((t) => t.status === 'open').length;
+        if (open) missing.push(`${open} open task${open === 1 ? '' : 's'}`);
+      }
+      if (missing.length) care.push(item(v, missing, { level: 'info' }));
+    }
+    care.sort((a, b) => b.items.length - a.items.length || a.mrn.localeCompare(b.mrn));
+  }
+
+  const urgency: NurseQueueItem[] = [];
+  for (const v of views) {
+    const open = v.flags.filter((f) => !f.resolved_at);
+    const urgent = open.find((f) => f.level === 'urgent');
+    const concerns = open.filter((f) => f.level === 'concern');
+    const unreached = v.tasks.find((t) => t.status === 'open' && t.kind === 'call' && t.title.startsWith('Not reached'));
+    const items = [
+      ...(urgent ? [`URGENT: ${urgent.summary}${urgent.acknowledged_at ? ' — acknowledged, resolve when handled' : ''}`] : []),
+      ...concerns.map((f) => `Concern: ${f.summary}`),
+      ...(unreached ? [unreached.title] : []),
+    ];
+    if (!items.length) continue;
+    urgency.push(
+      item(v, items, {
+        level: urgent ? 'urgent' : concerns.length ? 'concern' : 'info',
+        ackDueAt: urgent && !urgent.acknowledged_at ? urgent.ack_due_at : null,
+        acknowledged: urgent ? !!urgent.acknowledged_at : undefined,
+      }),
+    );
+  }
+  const rank = { urgent: 0, concern: 1, info: 2 } as const;
+  urgency.sort((a, b) => rank[a.level ?? 'info'] - rank[b.level ?? 'info'] || (a.ackDueAt ?? '').localeCompare(b.ackDueAt ?? '') || a.mrn.localeCompare(b.mrn));
+
+  const pending: NurseQueueItem[] = [];
+  const afterMonthEnd = now >= MONTH_END;
+  for (const v of views) {
+    const items: string[] = [];
+    if (v.status === 'consented') items.push('Call setup not finished');
+    if (v.status === 'plan_review') {
+      items.push(v.draftPlan ? `Awaiting care plan approval from ${STAFF.physician.short} (v${v.draftPlan.version})` : 'Care plan returned: update the call setup');
+    }
+    if (v.status === 'paused' && v.tasks.some((t) => t.status === 'open' && t.title === 'Switch program to CCM')) items.push('Paused: switch program to CCM');
+    const dueCall = v.program === 'ccm' && v.status === 'active' && v.calls.some((c) => c.kind === 'nurse' && c.status === 'scheduled' && c.scheduled_for! <= `${dateOf(now)}T23:59:59`);
+    if (dueCall && !v.completedContact) items.push('Monthly nurse call due');
+    for (const t of v.tasks.filter((t) => t.status === 'open' && !t.title.startsWith('Not reached') && t.kind !== 'physician' && t.title !== 'Switch program to CCM')) {
+      items.push(`${t.title} (due ${fmtShort(t.due)})`);
+    }
+    const toReview = v.calls.filter((c) => c.kind === 'ai' && c.status === 'done' && inMonth(c.started_at, month) && reached(c) && c.flag === 'none' && !c.reviewed_at);
+    if (toReview.length) items.push(`AI call ${fmtShort(toReview[toReview.length - 1].started_at)} to review`);
+    if (afterMonthEnd && v.note) {
+      if (!v.note.filedAt) items.push('Month-end note not filed');
+      else if (!v.note.attestedAt) items.push('Note filed; awaiting physician attestation');
+    }
+    if (items.length) pending.push(item(v, items));
+  }
+
+  return { consent, care, urgency, pending, careOpensOn };
+}
+
+function clinicalProfile(svc: Service, p: Patient, calls: CallView[], conditions: PatientView['conditions']): ClinicalProfile {
+  const setup = svc.setupOf(p.id);
+  const done = calls.filter((c) => reached(c) && c.answers).sort((a, b) => (a.started_at ?? '').localeCompare(b.started_at ?? ''));
+  const panels: ClinicalProfile['conditions'] = conditions.map((c) => {
+    const def = CONDITION_SETUP[c.condition as Condition];
+    const readings = def.readings
+      .filter((r) => setup?.readings.includes(r))
+      .map((r) => {
+        const points = done
+          .map((call) => ({ call, res: readingResults(call.answers!, setup).find((x) => x.type === r) }))
+          .filter((x) => x.res)
+          .map((x) => ({ when: fmtShort(x.call.started_at), value: x.res!.value, status: x.res!.status }));
+        const target = done.map((call) => readingResults(call.answers!, setup).find((x) => x.type === r)?.target).find(Boolean) ?? '';
+        return { label: READINGS[r].label, target, points };
+      });
+    const symptoms = def.rules
+      .filter((r) => setup?.symptoms_to_watch.includes(r))
+      .map((r) => ({
+        label: RULES[r].label,
+        level: RULES[r].level,
+        history: done
+          .filter((call) => call.answers!.symptoms[r])
+          .map((call) => ({ when: fmtShort(call.started_at), present: !!call.answers!.symptoms[r]!.present, detail: call.answers!.symptoms[r]!.detail ?? null })),
+      }));
+    return { code: c.code, name: c.name, label: c.label, readings, symptoms };
+  });
+
+  const log: ClinicalProfile['log'] = [];
+  for (const c of calls.filter((x) => x.status === 'done')) {
+    log.push({ at: c.started_at!, kind: 'call', text: c.summary });
+    if (c.nurse_note) log.push({ at: c.ended_at ?? c.started_at!, kind: 'note', text: `Nurse note: ${c.nurse_note}` });
+    for (const f of c.findings.filter((x) => x.level !== 'info')) log.push({ at: c.ended_at ?? c.started_at!, kind: 'finding', text: `${f.level === 'urgent' ? 'Urgent' : 'Concern'}: ${f.text}` });
+  }
+  for (const f of svc.flagsOf(p.id)) {
+    if (f.resolved_at) log.push({ at: f.resolved_at, kind: 'flag', text: `Flag resolved: ${f.note ?? f.summary}` });
+  }
+  for (const e of svc.events({ patientId: p.id }).filter((x) => /^(care_plan\.(approved|returned)|escalation\.closed|escalated$)/.test(x.type))) {
+    log.push({ at: e.at, kind: e.type.startsWith('care_plan') ? 'plan' : 'escalation', text: e.detail });
+  }
+  log.sort((a, b) => b.at.localeCompare(a.at));
+
+  const symptomLog: ClinicalProfile['symptomLog'] = [];
+  for (const c of done) {
+    for (const [rule, a] of Object.entries(c.answers!.symptoms)) {
+      if (!a) continue;
+      symptomLog.push({
+        at: c.started_at!,
+        label: RULES[rule as keyof typeof RULES]?.label ?? rule,
+        present: a.present,
+        detail: a.detail ?? null,
+        source: c.kind === 'ai' ? 'AI check-in' : 'Nurse call',
+      });
+    }
+  }
+  symptomLog.sort((a, b) => b.at.localeCompare(a.at));
+  return { conditions: panels, log, symptomLog };
 }
 
 function patientView(svc: Service, p: Patient, month: string, now: string, inMonthEnd: boolean): PatientView {
@@ -240,6 +542,8 @@ function patientView(svc: Service, p: Patient, month: string, now: string, inMon
   };
 
   // ── stepper
+  const approvedPlan = svc.approvedPlan(p.id);
+  const pendingPlan = svc.draftPlan(p.id);
   const did = (a: string) => time.filter((t) => t.activity === a);
   const stepFor = (key: string, label: string, entries: typeof time, extra = ''): Omit<StepView, 'n'> => ({
     key,
@@ -262,10 +566,12 @@ function patientView(svc: Service, p: Patient, month: string, now: string, inMon
     },
     {
       key: 'setup',
-      label: 'Call setup',
-      state: setup ? 'done' : 'open',
+      label: 'Call setup and care plan',
+      state: !setup ? 'open' : p.status === 'plan_review' || p.status === 'paused' ? 'attention' : 'done',
       detail: setup
-        ? `${p.program ? PROGRAM_LABEL[p.program] : '—'} · ${setup.readings.map((r) => READINGS[r].label.toLowerCase()).join(', ') || 'no readings'} · ${setup.symptoms_to_watch.length} symptoms watched`
+        ? `${p.program ? PROGRAM_LABEL[p.program] : '—'} · ${setup.readings.map((r) => READINGS[r].label.toLowerCase()).join(', ') || 'no readings'} · ${setup.symptoms_to_watch.length} symptoms watched · ${
+            approvedPlan ? `care plan v${approvedPlan.version} approved ${fmtShort(approvedPlan.approved_at)}` : 'care plan awaiting physician approval'
+          }${approvedPlan && pendingPlan ? ` (v${pendingPlan.version} waiting)` : ''}`
         : 'Not filled',
     },
     {
@@ -362,11 +668,24 @@ function patientView(svc: Service, p: Patient, month: string, now: string, inMon
       }
     : null;
 
+  const matrix = svc.icdMatrix();
+  const conditions = distinctConditions(p.qualifying_codes, matrix).map((m) => ({ code: m.code, name: codeName(m.code), label: m.label, condition: m.condition }));
+  const plans = svc.carePlansOf(p.id);
+  const draftPlan = svc.draftPlan(p.id);
+  const latest = plans[plans.length - 1] ?? null;
   return {
     ...p,
     name: fullName(p),
     age: ageOn(p.dob, now),
     codes: p.qualifying_codes.map((c) => ({ code: c, name: codeName(c) })),
+    payerLabel: classifyPayer(p.insurance_name, svc.settings().valueBasedPayers).label,
+    conditions,
+    programOptions: programOptions(svc, p),
+    carePlan: svc.approvedPlan(p.id),
+    draftPlan,
+    returnedPlan: !draftPlan && latest?.status === 'returned' ? latest : null,
+    profile: clinicalProfile(svc, p, calls, conditions),
+    reconciliation: ['active', 'paused', 'opted_out', 'plan_review'].includes(p.status) ? reconciliation(svc, p, month) : null,
     consent,
     setup,
     calls,

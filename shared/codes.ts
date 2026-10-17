@@ -1,42 +1,8 @@
+import { chronicMatches, distinctConditions, icdName, DEFAULT_MATRIX, type Condition, type MatrixRow } from './icd10';
 import type { ReadingType, RuleCode } from './types';
 
-export type Condition =
-  | 'hypertension'
-  | 'heart_failure'
-  | 'diabetes'
-  | 'copd'
-  | 'afib'
-  | 'ckd'
-  | 'depression'
-  | 'dementia'
-  | 'osteoporosis'
-  | 'osteoarthritis'
-  | 'hyperlipidemia'
-  | 'hypothyroidism'
-  | 'cad'
-  | 'asthma';
-
-/** ICD-10 codes this prototype treats as qualifying chronic conditions. */
-export const QUALIFYING_CODES: Record<string, { name: string; condition: Condition }> = {
-  I10: { name: 'Essential (primary) hypertension', condition: 'hypertension' },
-  'I50.9': { name: 'Heart failure, unspecified', condition: 'heart_failure' },
-  'N18.3': { name: 'Chronic kidney disease, stage 3', condition: 'ckd' },
-  'E11.9': { name: 'Type 2 diabetes mellitus without complications', condition: 'diabetes' },
-  'J44.9': { name: 'Chronic obstructive pulmonary disease, unspecified', condition: 'copd' },
-  'I48.91': { name: 'Unspecified atrial fibrillation', condition: 'afib' },
-  'M19.90': { name: 'Unspecified osteoarthritis, unspecified site', condition: 'osteoarthritis' },
-  'F32.A': { name: 'Depression, unspecified', condition: 'depression' },
-  'E78.5': { name: 'Hyperlipidemia, unspecified', condition: 'hyperlipidemia' },
-  'E03.9': { name: 'Hypothyroidism, unspecified', condition: 'hypothyroidism' },
-  'F03.90': { name: 'Unspecified dementia without behavioral disturbance', condition: 'dementia' },
-  'M81.0': { name: 'Age-related osteoporosis without current pathological fracture', condition: 'osteoporosis' },
-  'I25.10': { name: 'Atherosclerotic heart disease of native coronary artery', condition: 'cad' },
-  'J45.909': { name: 'Unspecified asthma, uncomplicated', condition: 'asthma' },
-  'E11.65': { name: 'Type 2 diabetes mellitus with hyperglycemia', condition: 'diabetes' },
-  'N18.4': { name: 'Chronic kidney disease, stage 4', condition: 'ckd' },
-};
-
-export const ICD10_PATTERN = /^[A-TV-Z][0-9][0-9A-Z](\.[0-9A-Z]{1,4})?$/;
+export type { Condition } from './icd10';
+export { ICD10_PATTERN } from './icd10';
 
 /**
  * What each condition adds to the call setup: readings to ask for and the
@@ -61,6 +27,13 @@ export const CONDITION_SETUP: Record<Condition, { readings: ReadingType[]; rules
   hypothyroidism: { readings: [], rules: [] },
   cad: { readings: [], rules: ['chest_pain'] },
   asthma: { readings: [], rules: ['breathing_severe', 'rescue_inhaler'] },
+  anxiety: { readings: [], rules: ['self_harm'] },
+  rheumatoid_arthritis: { readings: [], rules: ['falls'] },
+  stroke: { readings: ['bp'], rules: ['stroke_signs', 'falls'] },
+  parkinsons: { readings: [], rules: ['falls', 'confusion'] },
+  pad: { readings: [], rules: ['chest_pain'] },
+  obesity: { readings: [], rules: [] },
+  glaucoma: { readings: [], rules: ['falls'] },
 };
 
 export const READING_ORDER: ReadingType[] = ['bp', 'glucose', 'weight', 'oxygen'];
@@ -82,21 +55,25 @@ export const RULE_ORDER: RuleCode[] = [
   'falls',
 ];
 
-export function qualifyingCodes(codes: string[]): string[] {
-  return codes.filter((c) => c in QUALIFYING_CODES);
+/** The chronic codes among `codes`, in order (every code that matches the matrix). */
+export function qualifyingCodes(codes: string[], matrix: MatrixRow[] = DEFAULT_MATRIX): string[] {
+  return chronicMatches(codes, matrix).map((m) => m.code);
+}
+
+/** How many distinct chronic conditions the codes cover. */
+export function conditionCount(codes: string[], matrix: MatrixRow[] = DEFAULT_MATRIX): number {
+  return distinctConditions(codes, matrix).length;
 }
 
 export function codeName(code: string): string {
-  return QUALIFYING_CODES[code]?.name ?? code;
+  return icdName(code);
 }
 
 export function defaultSetupFor(codes: string[]): { readings: ReadingType[]; rules: RuleCode[] } {
   const readings = new Set<ReadingType>();
   const rules = new Set<RuleCode>();
-  for (const code of codes) {
-    const q = QUALIFYING_CODES[code];
-    if (!q) continue;
-    const s = CONDITION_SETUP[q.condition];
+  for (const m of chronicMatches(codes)) {
+    const s = CONDITION_SETUP[m.condition];
     s.readings.forEach((r) => readings.add(r));
     s.rules.forEach((r) => rules.add(r));
   }

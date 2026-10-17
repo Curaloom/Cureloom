@@ -1,4 +1,4 @@
-// Row shapes for the nine tables, as the server hands them to the client.
+// Row shapes for the tables, as the server hands them to the client.
 import type { ActivityKey, BillingCode } from './constants';
 import type {
   AnsweredBy,
@@ -6,12 +6,15 @@ import type {
   CallKind,
   CallOutcome,
   CallStatus,
+  Complexity,
   Coverage,
   FlagLevel,
+  OpsDecision,
   PatientStatus,
   Program,
   ReadingType,
   RuleCode,
+  Sex,
   Targets,
   TranscriptLine,
 } from './types';
@@ -26,7 +29,21 @@ export interface Patient {
   state: string;
   coverage: Coverage;
   is_qmb: boolean;
+  /** The chronic codes among diagnosis_codes, in roster order. */
   qualifying_codes: string[];
+  sex: Sex;
+  insurance_name: string;
+  insurance_id: string;
+  /** Every diagnosis code on the roster row, normalised. */
+  diagnosis_codes: string[];
+  /** The program the roster determination proposed, which Ops can override. */
+  proposed_program: Program | null;
+  /** 0–100: how sure the determination is (payer match × ICD match). */
+  confidence: number;
+  confidence_reasons: string[];
+  ops_decision: OpsDecision | null;
+  ops_note: string | null;
+  ops_decided_at: string | null;
   last_visit_date: string | null;
   caregiver_name: string | null;
   caregiver_phone: string | null;
@@ -40,7 +57,7 @@ export interface Patient {
 export interface Consent {
   id: number;
   patient_id: number;
-  method: 'at_visit' | 'nurse_phone';
+  method: 'at_visit' | 'nurse_phone' | 'digital_link';
   consent_date: string;
   captured_by: string;
   explained_availability: boolean;
@@ -129,6 +146,8 @@ export interface TimeEntry {
   seconds: number;
   counts: boolean;
   call_id: number | null;
+  role: 'nurse' | 'physician';
+  task_id: number | null;
 }
 
 export interface MonthClose {
@@ -141,6 +160,46 @@ export interface MonthClose {
   held_reason: string | null;
   code: BillingCode | null;
   amount: number | null;
+  lines: ClaimLine[];
+  complexity: Complexity;
+  complexity_by: string | null;
+  complexity_at: string | null;
+}
+
+/** One billed code for a patient-month. Add-on codes carry their units. */
+export interface ClaimLine {
+  code: BillingCode;
+  units: number;
+  /** Fee × units. */
+  amount: number;
+}
+
+export interface CarePlanContent {
+  program: Program;
+  code: BillingCode | null;
+  tier: string;
+  problems: { code: string; name: string; condition: string; goals: string[] }[];
+  monitoring: { readings: string[]; targets: string[]; symptoms: string[] };
+  contact: string;
+  caregiver: string | null;
+  consent: string;
+  team: string[];
+}
+
+export interface CarePlan {
+  id: number;
+  patient_id: number;
+  version: number;
+  content: CarePlanContent;
+  created_at: string;
+  created_by: string;
+  status: 'draft' | 'approved' | 'superseded' | 'returned';
+  approved_at: string | null;
+  approved_by: string | null;
+  approver_npi: string | null;
+  prev_hash: string | null;
+  hash: string | null;
+  return_note: string | null;
 }
 
 export interface EventRow {

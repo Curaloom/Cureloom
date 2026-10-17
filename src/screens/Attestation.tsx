@@ -1,4 +1,3 @@
-import { FEES, type BillingCode } from '../../shared/constants';
 import { fmtDateTime } from '../../shared/time';
 import { useStore } from '../store';
 import { Badge, Card, Empty, money } from '../ui';
@@ -18,7 +17,10 @@ export function Attestation() {
     <div className="stack">
       <div className="page-head">
         <h1>Monthly attestation · {state.clock.monthLabel}</h1>
-        <p className="muted">Signed by {state.staff.physician.name} after the nurse files the notes.</p>
+        <p className="muted">
+          Signed by {state.staff.physician.name} after the nurse files the notes. Care plan approvals and escalations are on{' '}
+          <a href="#/physician">Care plans & escalations</a>.
+        </p>
       </div>
       <div className="grid2">
         <Card title={`Urgent flags this month (${urgent.length})`}>
@@ -100,8 +102,10 @@ export function Attestation() {
                     <a href={`#/month-end/${p.id}`}>{p.name}</a> <span className="muted small">{p.mrn}</span>
                   </td>
                   <td>{p.program?.toUpperCase()}</td>
-                  <td className="mono">{p.billing.awaitingAttestation ? p.billing.code : '—'}</td>
-                  <td className="right">{p.billing.awaitingAttestation ? money(feeFor(p.billing.code)) : <span className="muted small">held: {p.billing.reason}</span>}</td>
+                  <td className="mono">{p.billing.awaitingAttestation ? p.billing.lines.map((l) => (l.units > 1 ? `${l.code} ×${l.units}` : l.code)).join(' + ') : '—'}</td>
+                  <td className="right">
+                    {p.billing.awaitingAttestation ? money(p.billing.lines.reduce((s, l) => s + l.amount, 0)) : <span className="muted small">held: {p.billing.reason}</span>}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -130,8 +134,4 @@ export function Attestation() {
       </Card>
     </div>
   );
-}
-
-function feeFor(code: BillingCode | null): number | null {
-  return code ? FEES[code] : null;
 }

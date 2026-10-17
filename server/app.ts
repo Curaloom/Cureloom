@@ -1,13 +1,28 @@
 import express from 'express';
 import type { AiInput } from '../shared/aiCall';
 import type { Role } from '../shared/types';
-import { fmtDateTime } from '../shared/time';
-import { toCsv } from './roster';
+import { dateOf, fmtDateTime } from '../shared/time';
+import { claimTable, exceptionsTable } from './cms1500';
+import { claimsPreflight } from './ledger';
+import { parseCsv, toCsv } from './roster';
 import { Service, UserError } from './service';
 import { buildState } from './views';
+import { readXlsxTable, writeXlsxTable } from './xlsx';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Body = any;
+
+/** A dropped roster file: CSV as text, XLSX as base64. Parsed here because reading XLSX is async. */
+async function tableOf(b: Body): Promise<string[][]> {
+  if (typeof b.xlsxBase64 === 'string') {
+    try {
+      return await readXlsxTable(Buffer.from(b.xlsxBase64, 'base64'));
+    } catch {
+      throw new UserError('That file could not be read as an Excel workbook (.xlsx).');
+    }
+  }
+  return parseCsv(String(b.csv ?? ''));
+}
 
 /** Every command the UI can send, keyed by name. The role comes from the demo bar's role switcher. */
 function actions(svc: Service): Record<string, (role: Role, b: Body) => unknown> {
@@ -20,8 +35,22 @@ function actions(svc: Service): Record<string, (role: Role, b: Body) => unknown>
     saveCheckpoint: () => svc.saveCheckpoint(),
     restoreCheckpoint: () => svc.restoreCheckpoint(),
     uploadRoster: (r, b) => svc.uploadRoster(r, b.filename, b.csv),
-    uploadSeedRoster: (r) => svc.uploadRoster(r, 'october-roster.csv', svc.rosterCsv()),
+    previewRoster: async (r, b) => svc.previewRoster(r, b.filename, await tableOf(b)),
+    previewSeedRoster: (r) => svc.previewRoster(r, 'october-roster.csv', parseCsv(svc.rosterCsv())),
+    importRoster: (r, b) => svc.importRoster(r, b.mapping ?? undefined),
+    cancelRosterPreview: (r) => svc.cancelRosterPreview(r),
     confirmEligibility: (r, b) => svc.confirmEligibility(r, b.patientId),
+    opsDecide: (r, b) => svc.opsDecide(r, b.patientId, b.decision, b.program ?? null, b.note),
+    opsApproveAll: (r, b) => svc.opsApproveAll(r, Number(b.minConfidence ?? 80)),
+    saveBillingSettings: (r, b) => svc.saveBillingSettings(r, b.settings ?? {}),
+    sendConsentLink: (r, b) => svc.sendConsentLink(r, b.patientId),
+    simulateConsentSigned: (_r, b) => svc.simulateConsentSigned(b.patientId, b),
+    approveCarePlan: (r, b) => svc.approveCarePlan(r, b.planId),
+    returnCarePlan: (r, b) => svc.returnCarePlan(r, b.planId, b.note),
+    openEscalation: (r, b) => svc.openEscalation(r, b.taskId),
+    closeEscalation: (r, b) => svc.closeEscalation(r, b.taskId, b),
+    discardPhysicianTimer: (r) => svc.discardPhysicianTimer(r),
+    setComplexity: (r, b) => svc.setComplexity(r, b.patientId, b.complexity),
     startConsentCall: (r, b) => svc.startConsentCall(r, b.patientId),
     recordConsent: (r, b) => svc.recordConsent(r, b.patientId, b),
     saveCallSetup: (r, b) => svc.saveCallSetup(r, b.patientId, b),
@@ -54,6 +83,12 @@ function sendCsv(res: express.Response, name: string, csv: string) {
   res.send(csv);
 }
 
+function sendXlsx(res: express.Response, name: string, buf: Buffer) {
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+  res.send(buf);
+}
+
 export function createApi(svc: Service): express.Router {
   const api = express.Router();
   const table = actions(svc);
@@ -67,10 +102,30 @@ export function createApi(svc: Service): express.Router {
     res.json(svc.events({ patientId: pid, prefix: req.query.prefix ? String(req.query.prefix) : undefined }));
   });
 
-  api.get('/api/seed/:name', (req, res) => {
+  api.get('/api/seed/:name', async (req, res) => {
     const allowed = ['october-roster.csv', 'roster-with-errors.csv'];
+    if (req.params.name === 'october-roster.xlsx') {
+      return sendXlsx(res, 'october-roster.xlsx', await writeXlsxTable(parseCsv(svc.rosterCsv())));
+    }
     if (!allowed.includes(req.params.name)) return res.status(404).send('Not found');
     sendCsv(res, req.params.name, svc.rosterCsv(req.params.name));
+  });
+
+  /** CMS-1500 flat file: only claims that pass pre-flight. 409 until the date of service. */
+  api.get(['/api/cms1500.csv', '/api/cms1500.xlsx'], async (req, res) => {
+    const month = svc.month();
+    const r = claimsPreflight(svc, month, dateOf(svc.now()));
+    if (!r.open) return res.status(409).type('text/plain').send(`The ${month} export opens on the date of service, ${r.dos}.`);
+    const table = claimTable(r.clean);
+    const name = `cms1500-${month}`;
+    if (req.path.endsWith('.xlsx')) return sendXlsx(res, `${name}.xlsx`, await writeXlsxTable(table));
+    sendCsv(res, `${name}.csv`, toCsv(table));
+  });
+
+  api.get('/api/cms1500-exceptions.csv', (_req, res) => {
+    const month = svc.month();
+    const r = claimsPreflight(svc, month, dateOf(svc.now()));
+    sendCsv(res, `cms1500-exceptions-${month}.csv`, toCsv(exceptionsTable(r.excluded)));
   });
 
   api.get('/api/billing.csv', (_req, res) => {
@@ -79,7 +134,7 @@ export function createApi(svc: Service): express.Router {
       r.mrn,
       r.name,
       r.program?.toUpperCase() ?? '',
-      r.billing.code ?? '',
+      r.billing.lines.length ? r.billing.lines.map((l) => (l.units > 1 ? `${l.code}x${l.units}` : l.code)).join(' ') : (r.billing.code ?? ''),
       r.billing.amount != null ? r.billing.amount.toFixed(2) : '',
       r.billing.status === 'not_enrolled' ? 'not enrolled' : r.billing.status,
       r.billing.reason ?? '',
@@ -89,7 +144,7 @@ export function createApi(svc: Service): express.Router {
       res,
       `billing-${s.clock.month}.csv`,
       toCsv([
-        ['mrn', 'patient', 'program', 'code', 'amount', 'status', 'reason', 'counted_minutes'],
+        ['mrn', 'patient', 'program', 'codes', 'amount', 'status', 'reason', 'counted_minutes'],
         ...rows,
         [],
         ['', `Total ready: ${s.billing.readyCount} patients`, '', '', s.billing.readyTotal.toFixed(2)],
@@ -110,12 +165,12 @@ export function createApi(svc: Service): express.Router {
     );
   });
 
-  api.post('/api/action/:name', (req, res) => {
+  api.post('/api/action/:name', async (req, res) => {
     const fn = table[req.params.name];
     if (!fn) return res.status(404).json({ error: `Unknown action ${req.params.name}` });
     const role = String(req.header('x-role') ?? '') as Role;
     try {
-      const result = fn(role, req.body ?? {});
+      const result = await fn(role, req.body ?? {});
       res.json({ ok: true, result: result ?? null, state: buildState(svc) });
     } catch (e) {
       if (e instanceof UserError) return res.status(e.status).json({ error: e.message });

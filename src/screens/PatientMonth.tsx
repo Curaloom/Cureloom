@@ -7,6 +7,7 @@ import { go } from '../router';
 import { useServerRealMs, useStore } from '../store';
 import { Badge, Card, Duration, Empty, StatusBadge } from '../ui';
 import { ConsentModal } from './ConsentModal';
+import { PlanDoc } from './Physician';
 import { SetupModal } from './SetupModal';
 import { Transcript } from './Transcript';
 
@@ -18,6 +19,7 @@ export function PatientMonth({ id }: { id: number }) {
   const p = state.patients.find((x) => x.id === id);
   const [consent, setConsent] = useState(false);
   const [setup, setSetup] = useState(false);
+  const [tab, setTab] = useState<'month' | 'profile' | 'plan'>('month');
   if (!p) return <Empty>No such patient.</Empty>;
   const nurse = role === 'nurse';
   const inCall = p.calls.find((c) => c.kind === 'nurse' && c.status === 'in_progress');
@@ -39,7 +41,10 @@ export function PatientMonth({ id }: { id: number }) {
               {p.age} · DOB {fmtDate(p.dob)}
             </span>
             <span>{p.phone}</span>
-            <span>{p.coverage === 'traditional' ? 'Traditional Medicare' : 'Medicare Advantage'}{p.is_qmb ? ', QMB' : ''}</span>
+            <span title={`Member ID ${p.insurance_id}`}>
+              {p.insurance_name} ({p.payerLabel}
+              {p.is_qmb && !/QMB/.test(p.payerLabel) ? ', QMB' : ''})
+            </span>
             {p.caregiver_name && (
               <span>
                 Caregiver: {p.caregiver_name}, {p.caregiver_phone}
@@ -48,7 +53,11 @@ export function PatientMonth({ id }: { id: number }) {
           </div>
           <div className="row gap tight">
             <StatusBadge status={p.status} />
-            {p.program && <Badge tone="info">{p.program.toUpperCase()}</Badge>}
+            {p.program ? (
+              <Badge tone="info">{p.program.toUpperCase()}</Badge>
+            ) : (
+              p.proposed_program && <Badge tone="neutral">{p.proposed_program.toUpperCase()} proposed</Badge>
+            )}
             {p.prefers_human && <Badge tone="neutral">Prefers a human</Badge>}
             {p.ineligible_reason && <span className="muted small">{p.ineligible_reason}</span>}
           </div>
@@ -64,7 +73,23 @@ export function PatientMonth({ id }: { id: number }) {
         </div>
       </div>
 
-      <div className="patient-grid">
+      <div className="tabs" role="tablist">
+        {(
+          [
+            ['month', 'This month'],
+            ['profile', 'Clinical profile'],
+            ['plan', `Care plan${p.carePlan ? ` v${p.carePlan.version}` : ''}${p.draftPlan ? ' · draft waiting' : ''}`],
+          ] as const
+        ).map(([k, label]) => (
+          <button key={k} role="tab" aria-selected={tab === k} className={`tab ${tab === k ? 'on' : ''}`} onClick={() => setTab(k)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'profile' && <ProfileView p={p} />}
+      {tab === 'plan' && <CarePlanView p={p} />}
+      <div className="patient-grid" hidden={tab !== 'month'}>
         <div className="stack">
           <Brief p={p} />
           <Card title="This month, step by step">
@@ -100,7 +125,7 @@ export function PatientMonth({ id }: { id: number }) {
           </button>
         ) : null;
       case 'setup':
-        return p.status === 'consented' || p.status === 'active' ? (
+        return ['consented', 'plan_review', 'active', 'paused'].includes(p.status) ? (
           <button className="btn btn-small" disabled={!nurse} onClick={() => setSetup(true)}>
             {p.setup ? 'Edit call setup' : 'Fill call setup'}
           </button>
@@ -558,5 +583,144 @@ function EscalateCard({ p }: { p: PatientView }) {
         Send to Dr. Patel
       </button>
     </Card>
+  );
+}
+
+function ProfileView({ p }: { p: PatientView }) {
+  const pr = p.profile;
+  return (
+    <div className="stack">
+      {!pr.conditions.length ? (
+        <Empty>No chronic conditions on record.</Empty>
+      ) : (
+        <div className="profile-grid">
+          {pr.conditions.map((c) => (
+            <Card key={c.code} title={c.label}>
+              <p className="muted small">
+                <span className="mono">{c.code}</span> {c.name}
+              </p>
+              {c.readings.map((r) => (
+                <div key={r.label} className="stack tight">
+                  <strong className="small">
+                    {r.label} {r.target && <span className="muted">· target {r.target}</span>}
+                  </strong>
+                  {r.points.length ? (
+                    <div className="trend">
+                      {r.points.map((pt, i) => (
+                        <span key={i} className={`pt ${pt.status}`} title={pt.status.replace('_', ' ')}>
+                          {pt.when}: {pt.value}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="muted small">No readings reported yet.</span>
+                  )}
+                </div>
+              ))}
+              {c.symptoms.length > 0 && (
+                <table className="table compact">
+                  <tbody>
+                    {c.symptoms.map((sy) => (
+                      <tr key={sy.label}>
+                        <td className="small">
+                          {sy.label} {sy.level === 'urgent' && <Badge tone="danger">urgent rule</Badge>}
+                        </td>
+                        <td className="small">
+                          {sy.history.length
+                            ? sy.history.map((h, i) => (
+                                <span key={i} className={h.present ? 'danger-text' : 'muted'}>
+                                  {i ? ' · ' : ''}
+                                  {h.when} {h.present ? `yes${h.detail ? ` (${h.detail})` : ''}` : 'no'}
+                                </span>
+                              ))
+                            : <span className="muted">not asked yet</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {!c.readings.length && !c.symptoms.length && <p className="muted small">Nothing in the call setup tracks this condition.</p>}
+            </Card>
+          ))}
+        </div>
+      )}
+      <div className="grid2">
+        <Card title="Running log">
+          {!pr.log.length ? (
+            <Empty>Nothing logged yet.</Empty>
+          ) : (
+            <ul className="log">
+              {pr.log.map((l, i) => (
+                <li key={i}>
+                  <span className="muted small">{fmtDateTime(l.at)}</span>
+                  <span>
+                    <Badge tone={l.kind === 'finding' || l.kind === 'flag' ? 'warn' : l.kind === 'plan' || l.kind === 'escalation' ? 'info' : 'neutral'}>{l.kind}</Badge>
+                  </span>
+                  <span>{l.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+        <Card title="Symptom tracking log">
+          {!pr.symptomLog.length ? (
+            <Empty>No symptom answers yet.</Empty>
+          ) : (
+            <table className="table compact">
+              <tbody>
+                {pr.symptomLog.map((sy, i) => (
+                  <tr key={i}>
+                    <td className="small nowrap">{fmtShort(sy.at)}</td>
+                    <td className="small">{sy.label}</td>
+                    <td className="small">{sy.present ? <Badge tone="warn">yes</Badge> : <span className="muted">no</span>}</td>
+                    <td className="small muted">
+                      {sy.detail ?? ''} {sy.source}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function CarePlanView({ p }: { p: PatientView }) {
+  const plan = p.carePlan;
+  return (
+    <div className="grid2">
+      <Card title={plan ? `In effect: v${plan.version}` : 'No approved care plan'}>
+        {plan ? (
+          <>
+            <p className="small">
+              Approved by {plan.approved_by}, NPI {plan.approver_npi}, on {fmtDateTime(plan.approved_at)}.
+            </p>
+            <PlanDoc c={plan.content} />
+            <p className="hash">Signature hash {plan.hash}</p>
+          </>
+        ) : (
+          <Empty>The physician approves the care plan after the call setup. No calls are scheduled until then.</Empty>
+        )}
+      </Card>
+      <Card title={p.draftPlan ? `Draft v${p.draftPlan.version}, waiting for the physician` : p.returnedPlan ? `v${p.returnedPlan.version} returned` : 'No draft'}>
+        {p.draftPlan ? (
+          <>
+            <p className="muted small">
+              Compiled {fmtDateTime(p.draftPlan.created_at)} from the call setup. Approve it on <a href="#/physician">Care plans & escalations</a>.
+            </p>
+            <PlanDoc c={p.draftPlan.content} />
+          </>
+        ) : p.returnedPlan ? (
+          <p>
+            The physician asked for changes: <strong>{p.returnedPlan.return_note}</strong>. Update the call setup to draft a new version.
+          </p>
+        ) : (
+          <Empty>Changing the call setup drafts a new version for approval.</Empty>
+        )}
+      </Card>
+    </div>
   );
 }

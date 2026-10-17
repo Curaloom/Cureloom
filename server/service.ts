@@ -11,9 +11,15 @@ import {
   type AiState,
 } from '../shared/aiCall';
 import { qualifyingCodes } from '../shared/codes';
+import { DEFAULT_MATRIX, matrixRows, type Condition, type MatrixRow } from '../shared/icd10';
+import { FIELDS, headerSignature, suggestMapping, type FieldKey, type Mapping } from '../shared/mapper';
+import { npiValid } from '../shared/npi';
+import { programBlock } from '../shared/program';
 import {
   ACK_WINDOW_MINUTES,
   ACTIVITIES,
+  BILLING_CODES,
+  DEFAULT_BILLING_SETTINGS,
   AI_CALL_HOUR,
   AI_MAX_ATTEMPTS,
   AI_RETRY_BUSINESS_DAYS,
@@ -26,9 +32,10 @@ import {
   WORKDAY_END_HOUR,
   WORKDAY_START_HOUR,
   type ActivityKey,
+  type BillingSettings,
 } from '../shared/constants';
-import type { AttestationRecord, RosterRowResult, RosterUploadView, RunItem, RunView } from '../shared/api';
-import type { Call, CallSetup, Consent, EventRow, Flag, MonthClose, Patient, Task, TaskKind, TimeEntry } from '../shared/model';
+import type { AttestationRecord, RosterPreview, RosterRowResult, RosterUploadView, RunItem, RunView } from '../shared/api';
+import type { Call, CallSetup, CarePlan, Consent, EventRow, Flag, MonthClose, Patient, Task, TaskKind, TimeEntry } from '../shared/model';
 import type { NurseScript } from '../shared/nurseScript';
 import { answersFromTranscript, emptyAnswers, mergeAnswers, parseUtterance } from '../shared/parse';
 import { assess, DEFAULT_TARGETS, levelOf, RULES, tasksFor, type TaskDraft } from '../shared/rules';
@@ -56,6 +63,9 @@ import type {
   Finding,
   FlagLevel,
   PatientStatus,
+  Complexity,
+  Coverage,
+  OpsDecision,
   Program,
   ReadingType,
   Role,
@@ -64,8 +74,11 @@ import type {
   TranscriptLine,
 } from '../shared/types';
 import { evaluateBilling } from './billing';
-import { TABLES, type DB } from './db';
-import { eligibility, parseRoster, type RosterRow } from './roster';
+import { approvalHash, compileCarePlan } from './carePlan';
+import { SCHEMA_VERSION, TABLES, type DB } from './db';
+import { determine, type Determination } from './determine';
+import { classifyPayer } from './payer';
+import { parseCsv, parseRoster, parseRosterCsv, type RosterRow } from './roster';
 
 export class UserError extends Error {
   constructor(
@@ -80,14 +93,35 @@ export const AI_ACTOR = 'AI caller';
 export const SYSTEM = 'System';
 export const TESTER = 'Tester';
 
+/** Nurse and physician each have one timer, so a physician can time an escalation while a nurse call runs. */
+export type TimerSlot = 'nurse' | 'physician';
+
 interface Timer {
   patientId: number;
   activity: ActivityKey;
   callId: number | null;
+  taskId?: number | null;
   startedAt: string;
   startedReal: number;
   speed: number;
   user: string;
+}
+
+interface StagedUpload {
+  filename: string;
+  at: string;
+  by: string;
+  signature: string;
+  table: string[][];
+  mapping: Mapping;
+  saved: boolean;
+}
+
+/** A roster row plus what the payer and the determination made of it. */
+interface PatientInput extends RosterRow {
+  coverage: Coverage;
+  qmb: boolean;
+  d: Determination;
 }
 
 interface SeptemberSeed {
@@ -128,7 +162,7 @@ export interface ServiceOptions {
   checkpointPath?: string;
 }
 
-const ENROLLED: PatientStatus[] = ['consented', 'active', 'paused', 'opted_out'];
+const ENROLLED: PatientStatus[] = ['consented', 'plan_review', 'active', 'paused', 'opted_out'];
 
 export function isEnrolled(p: Patient): boolean {
   return ENROLLED.includes(p.status);
@@ -167,6 +201,7 @@ export class Service {
   readonly checkpointPath: string | null;
   private realNow: () => number;
   private scriptCache: Script | null = null;
+  private matrixCache: MatrixRow[] | null = null;
 
   constructor(o: ServiceOptions) {
     this.db = o.db;
@@ -261,7 +296,29 @@ export class Service {
   // ───────────────────────────── reads
 
   private toPatient(r: any): Patient {
-    return { ...r, is_qmb: !!r.is_qmb, prefers_human: !!r.prefers_human, qualifying_codes: JSON.parse(r.qualifying_codes) };
+    return {
+      ...r,
+      is_qmb: !!r.is_qmb,
+      prefers_human: !!r.prefers_human,
+      qualifying_codes: JSON.parse(r.qualifying_codes),
+      diagnosis_codes: JSON.parse(r.diagnosis_codes),
+      confidence_reasons: JSON.parse(r.confidence_reasons),
+    };
+  }
+
+  /** The practice's billing settings: fee schedule, NPIs, place of service, program default, value-based payers. */
+  settings(): BillingSettings {
+    const s = this.kv<Partial<BillingSettings>>('billingSettings', {});
+    return { ...DEFAULT_BILLING_SETTINGS, ...s, fees: { ...DEFAULT_BILLING_SETTINGS.fees, ...(s.fees ?? {}) } };
+  }
+
+  /** The ICD-10 chronic condition matrix as loaded into the local database. */
+  icdMatrix(): MatrixRow[] {
+    if (!this.matrixCache) {
+      const rows = this.db.prepare('SELECT prefix, condition, label FROM icd10_chronic ORDER BY prefix').all() as MatrixRow[];
+      this.matrixCache = rows.length ? rows : DEFAULT_MATRIX;
+    }
+    return this.matrixCache;
   }
 
   patients(): Patient[] {
@@ -347,6 +404,21 @@ export class Service {
     return this.db.prepare('SELECT * FROM flag ORDER BY id').all() as Flag[];
   }
 
+  /** Distinct chronic conditions on the patient's record. */
+  conditionCount(p: Patient): number {
+    return new Set(p.qualifying_codes.map((c) => this.conditionOf(c)).filter(Boolean)).size;
+  }
+
+  conditionOf(code: string): Condition | null {
+    let best: MatrixRow | null = null;
+    const bare = code.replace('.', '');
+    for (const r of this.icdMatrix()) {
+      const p = r.prefix.replace('.', '');
+      if (bare.startsWith(p) && (!best || p.length > best.prefix.replace('.', '').length)) best = r;
+    }
+    return best?.condition ?? null;
+  }
+
   timeOf(pid: number, month?: string): TimeEntry[] {
     const rows = this.db.prepare('SELECT * FROM time_entry WHERE patient_id = ? ORDER BY started_at, id').all(pid) as any[];
     return rows
@@ -361,11 +433,33 @@ export class Service {
   }
 
   monthCloseOf(pid: number, month: string): MonthClose | null {
-    return (
-      (this.db.prepare('SELECT * FROM month_close WHERE patient_id = ? AND month = ?').get(pid, month) as
-        | MonthClose
-        | undefined) ?? null
-    );
+    const r = this.db.prepare('SELECT * FROM month_close WHERE patient_id = ? AND month = ?').get(pid, month) as any;
+    return r ? { ...r, lines: JSON.parse(r.lines) } : null;
+  }
+
+  private toPlan(r: any): CarePlan {
+    return { ...r, content: JSON.parse(r.content) };
+  }
+
+  carePlansOf(pid: number): CarePlan[] {
+    return (this.db.prepare('SELECT * FROM care_plan WHERE patient_id = ? ORDER BY version').all(pid) as any[]).map((r) => this.toPlan(r));
+  }
+
+  carePlan(id: number): CarePlan {
+    const r = this.db.prepare('SELECT * FROM care_plan WHERE id = ?').get(id);
+    if (!r) throw new UserError(`No care plan with id ${id}`, 404);
+    return this.toPlan(r);
+  }
+
+  /** The care plan version in effect: the latest one the physician approved. */
+  approvedPlan(pid: number): CarePlan | null {
+    const r = this.db.prepare("SELECT * FROM care_plan WHERE patient_id = ? AND status = 'approved' ORDER BY version DESC LIMIT 1").get(pid);
+    return r ? this.toPlan(r) : null;
+  }
+
+  draftPlan(pid: number): CarePlan | null {
+    const r = this.db.prepare("SELECT * FROM care_plan WHERE patient_id = ? AND status = 'draft' ORDER BY version DESC LIMIT 1").get(pid);
+    return r ? this.toPlan(r) : null;
   }
 
   /** Calls that reached the patient or caregiver this month. */
@@ -395,8 +489,12 @@ export class Service {
       .all(...args) as EventRow[];
   }
 
-  timer(): Timer | null {
-    return this.kv<Timer | null>('timer', null);
+  timer(slot: TimerSlot = 'nurse'): Timer | null {
+    return this.kv<Timer | null>(`timer.${slot}`, null);
+  }
+
+  private setTimer(slot: TimerSlot, t: Timer | null): void {
+    this.setKv(`timer.${slot}`, t);
   }
 
   script(): Script {
@@ -439,7 +537,12 @@ export class Service {
   reset(): void {
     this.db.transaction(() => {
       for (const t of TABLES) this.db.prepare(`DELETE FROM ${t}`).run();
-      this.db.prepare("DELETE FROM sqlite_sequence WHERE name IN ('patient','consent','call','task','flag','time_entry','event')").run();
+      this.db
+        .prepare("DELETE FROM sqlite_sequence WHERE name IN ('patient','consent','call','task','flag','time_entry','event','care_plan')")
+        .run();
+      const insert = this.db.prepare('INSERT INTO icd10_chronic (prefix, condition, label) VALUES (?, ?, ?)');
+      for (const r of matrixRows()) insert.run(r.prefix, r.condition, r.label);
+      this.matrixCache = null;
       this.setKv('clock', { demo: toMs(DEMO_START), real: this.realNow() });
       this.setKv('speed', 60);
       this.seedSeptember();
@@ -455,13 +558,14 @@ export class Service {
 
   private seedSeptember(): void {
     const seed: SeptemberSeed = JSON.parse(fs.readFileSync(path.join(this.seedDir, 'september.json'), 'utf8'));
-    const { rows } = parseRoster(this.rosterCsv(), dateOf(DEMO_START));
+    const today = dateOf(DEMO_START);
+    const { rows } = parseRosterCsv(this.rosterCsv(), today);
     const byMrn = new Map(rows.filter((r) => r.value).map((r) => [r.value!.mrn, r.value!]));
     for (const a of seed.active) {
       const base = byMrn.get(a.mrn);
       if (!base) throw new Error(`Seed: ${a.mrn} is not in the roster CSV`);
-      const r = { ...base, ...(a.september_overrides ?? {}) };
-      const pid = this.insertPatient(r, 'active', null, a.program);
+      const r = this.assess({ ...base, ...(a.september_overrides ?? {}) }, today);
+      const pid = this.insertPatient(r, 'active', null, a.program, 'approved');
       this.db
         .prepare(
           `INSERT INTO consent (patient_id, method, consent_date, captured_by, explained_availability,
@@ -487,6 +591,9 @@ export class Service {
           JSON.stringify(mergeTargets(a.call_setup.targets)),
           a.call_setup.ehr_plan_reviewed_on,
         );
+      const approvedAt = `${a.call_setup.ehr_plan_reviewed_on}T12:00:00`;
+      const planId = this.insertPlan(this.patient(pid), STAFF.nurse.name, approvedAt);
+      this.signPlan(planId, STAFF.physician.name, approvedAt);
       const sc = a.september_call;
       let answers: Answers = { ...emptyAnswers(), meds: { status: 'ok' } };
       for (const [type, text] of Object.entries(sc.readings)) {
@@ -514,12 +621,28 @@ export class Service {
     }
   }
 
-  private insertPatient(r: RosterRow, status: PatientStatus, reason: string | null, program: Program | null): number {
+  /** What the payer classifier and the program determination make of a roster row. */
+  private assess(r: RosterRow, today: string): PatientInput {
+    const settings = this.settings();
+    const payer = classifyPayer(r.insurance_name, settings.valueBasedPayers);
+    const qmb = r.is_qmb ?? payer.qmb;
+    const d = determine({ codes: r.codes, repaired: r.repaired, payer, isQmb: qmb, lastVisit: r.last_visit_date }, today, settings, this.icdMatrix());
+    return { ...r, coverage: payer.coverage, qmb, d };
+  }
+
+  private insertPatient(
+    r: PatientInput,
+    status: PatientStatus,
+    reason: string | null,
+    program: Program | null,
+    decision: OpsDecision | null = null,
+  ): number {
     const info = this.db
       .prepare(
         `INSERT INTO patient (mrn, first_name, last_name, dob, phone, state, coverage, is_qmb, qualifying_codes,
+           sex, insurance_name, insurance_id, diagnosis_codes, proposed_program, confidence, confidence_reasons, ops_decision,
            last_visit_date, caregiver_name, caregiver_phone, preferred_language, prefers_human, status, ineligible_reason, program)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
       )
       .run(
         r.mrn,
@@ -529,8 +652,16 @@ export class Service {
         r.phone,
         r.state,
         r.coverage,
-        r.is_qmb ? 1 : 0,
-        JSON.stringify(qualifyingCodes(r.codes)),
+        r.qmb ? 1 : 0,
+        JSON.stringify(qualifyingCodes(r.codes, this.icdMatrix())),
+        r.sex,
+        r.insurance_name,
+        r.insurance_id,
+        JSON.stringify(r.codes),
+        program ?? r.d.program,
+        r.d.confidence,
+        JSON.stringify(r.d.reasons),
+        decision,
         r.last_visit_date,
         r.caregiver_name,
         r.caregiver_phone,
@@ -544,11 +675,11 @@ export class Service {
 
   saveCheckpoint(): { savedAt: string } {
     if (!this.checkpointPath) throw new UserError('Checkpoints are not available here.');
-    if (this.timer()) throw new UserError('Stop the running timer before saving a checkpoint.');
+    if (this.timer('nurse') || this.timer('physician')) throw new UserError('Stop the running timer before saving a checkpoint.');
     fs.mkdirSync(path.dirname(this.checkpointPath), { recursive: true });
     fs.rmSync(this.checkpointPath, { force: true });
     this.db.prepare('VACUUM INTO ?').run(this.checkpointPath);
-    const meta = { savedAt: new Date(this.realNow()).toISOString(), demoAt: this.now() };
+    const meta = { savedAt: new Date(this.realNow()).toISOString(), demoAt: this.now(), schema: SCHEMA_VERSION };
     fs.writeFileSync(`${this.checkpointPath}.json`, JSON.stringify(meta));
     this.tx(() => this.log('demo.checkpoint', `Checkpoint saved at demo time ${fmtDateTime(meta.demoAt)}.`, null, TESTER));
     return { savedAt: meta.savedAt };
@@ -556,7 +687,10 @@ export class Service {
 
   checkpointInfo(): { savedAt: string | null; demoAt: string | null } {
     if (!this.checkpointPath || !fs.existsSync(`${this.checkpointPath}.json`)) return { savedAt: null, demoAt: null };
-    return JSON.parse(fs.readFileSync(`${this.checkpointPath}.json`, 'utf8'));
+    const meta = JSON.parse(fs.readFileSync(`${this.checkpointPath}.json`, 'utf8'));
+    // A checkpoint saved under an older schema cannot be restored into this one.
+    if (meta.schema !== SCHEMA_VERSION) return { savedAt: null, demoAt: null };
+    return { savedAt: meta.savedAt, demoAt: meta.demoAt };
   }
 
   restoreCheckpoint(): void {
@@ -571,7 +705,9 @@ export class Service {
           this.db.prepare(`INSERT INTO main.${t} SELECT * FROM cp.${t}`).run();
         }
         this.setNow(toMs(info.demoAt!));
-        this.setKv('timer', null);
+        this.setTimer('nurse', null);
+        this.setTimer('physician', null);
+        this.matrixCache = null;
         this.log('demo.checkpoint', `Checkpoint restored (demo time ${fmtDateTime(info.demoAt!)}).`, null, TESTER);
       })();
     } finally {
@@ -582,7 +718,7 @@ export class Service {
   // ───────────────────────────── demo clock commands
 
   private noTimer(): void {
-    const t = this.timer();
+    const t = this.timer('nurse') ?? this.timer('physician');
     if (t) throw new UserError(`Stop the running timer (${ACTIVITIES[t.activity].label}) first.`);
   }
 
@@ -825,17 +961,78 @@ export class Service {
 
   // ───────────────────────────── roster upload and enrollment
 
-  uploadRoster(role: Role, filename: string, csv: string): RosterUploadView {
+  /** Step 1 of an upload: stage the parsed table and propose a column mapping. */
+  previewRoster(role: Role, filename: string, table: string[][]): RosterPreview {
     return this.tx(() => {
       const actor = this.need(role, ['manager'], 'upload the roster');
+      const rows = table.filter((r) => r.some((c) => String(c ?? '').trim() !== ''));
+      if (!rows.length || !rows[0].some((h) => String(h).trim())) throw new UserError('The file is empty.');
+      const headers = rows[0].map((h) => String(h ?? '').trim());
+      const signature = headerSignature(headers);
+      const saved = this.kv<Record<string, Partial<Record<FieldKey, number | null>>>>('mappings', {})[signature];
+      const stage: StagedUpload = {
+        filename: filename || 'roster.csv',
+        at: this.now(),
+        by: actor,
+        signature,
+        table: rows.map((r) => headers.map((_, j) => String(r[j] ?? '').trim())),
+        mapping: suggestMapping(headers, saved),
+        saved: !!saved,
+      };
+      this.setKv('stagedUpload', stage);
+      this.log('roster.previewed', `${stage.filename}: ${rows.length - 1} rows read; column mapping ${saved ? 'reused from a saved layout' : 'proposed'}.`, null, actor);
+      return this.rosterPreview()!;
+    });
+  }
+
+  rosterPreview(): RosterPreview | null {
+    const s = this.kv<StagedUpload | null>('stagedUpload', null);
+    if (!s) return null;
+    return {
+      filename: s.filename,
+      at: s.at,
+      headers: s.table[0],
+      sample: s.table.slice(1, 6),
+      rowCount: s.table.length - 1,
+      mapping: s.mapping,
+      savedLayout: s.saved,
+    };
+  }
+
+  cancelRosterPreview(role: Role): void {
+    this.tx(() => {
+      const actor = this.need(role, ['manager'], 'upload the roster');
+      this.setKv('stagedUpload', null);
+      this.log('roster.cancelled', 'Staged upload discarded.', null, actor);
+    });
+  }
+
+  /** Step 2: validate every row with the confirmed mapping and apply it to the roster. */
+  importRoster(role: Role, columns?: Partial<Record<FieldKey, number | null>>): RosterUploadView {
+    return this.tx(() => {
+      const actor = this.need(role, ['manager'], 'upload the roster');
+      const stage = this.kv<StagedUpload | null>('stagedUpload', null);
+      if (!stage) throw new UserError('Upload a file first.');
+      const mapping: Mapping = { ...stage.mapping };
+      const width = stage.table[0].length;
+      for (const f of FIELDS) {
+        if (!columns || !(f.key in columns)) continue;
+        const col = columns[f.key];
+        const valid = col != null && Number.isInteger(col) && col >= 0 && col < width;
+        if (valid && stage.mapping[f.key].column === col) continue;
+        mapping[f.key] = valid ? { column: col!, score: 1, source: 'manual' } : { column: null, score: 0, source: 'none' };
+      }
+      const used = Object.values(mapping).map((m) => m.column).filter((c) => c != null);
+      if (new Set(used).size !== used.length) throw new UserError('Two fields are mapped to the same column.');
       const today = dateOf(this.now());
-      const { rows, headerErrors } = parseRoster(csv ?? '', today);
+      const { rows, headerErrors } = parseRoster(stage.table, mapping, today);
       if (headerErrors.length) throw new UserError(headerErrors.join(' '));
       const results: RosterRowResult[] = [];
+      const cell = (row: number, k: FieldKey) => (mapping[k].column == null ? '' : (stage.table[row - 1][mapping[k].column!] ?? ''));
       for (const r of rows) {
-        const name = `${r.raw.first_name ?? ''} ${r.raw.last_name ?? ''}`.trim();
+        const name = `${cell(r.row, 'first_name')} ${cell(r.row, 'last_name')}`.trim();
         if (!r.value) {
-          results.push({ row: r.row, mrn: r.raw.mrn ?? '', name, accepted: false, outcome: 'Rejected', errors: r.errors, raw: r.raw });
+          results.push({ row: r.row, mrn: cell(r.row, 'patient_id'), name, accepted: false, outcome: 'Rejected', errors: r.errors, raw: r.raw });
           continue;
         }
         const outcome = this.applyRosterRow(r.value, today, actor);
@@ -844,36 +1041,51 @@ export class Service {
       const view: RosterUploadView = {
         at: this.now(),
         by: actor,
-        filename: filename || 'roster.csv',
+        filename: stage.filename,
         accepted: results.filter((r) => r.accepted).length,
         rejected: results.filter((r) => !r.accepted).length,
         rows: results,
+        mrns: results.filter((r) => r.accepted).map((r) => r.mrn),
       };
+      const layouts = this.kv<Record<string, Partial<Record<FieldKey, number | null>>>>('mappings', {});
+      layouts[stage.signature] = Object.fromEntries(FIELDS.map((f) => [f.key, mapping[f.key].column]));
+      this.setKv('mappings', layouts);
       this.setKv('lastUpload', view);
-      this.log('roster.uploaded', `Roster ${view.filename} uploaded: ${view.accepted} rows accepted, ${view.rejected} rejected.`, null, actor);
+      this.setKv('stagedUpload', null);
+      this.log('roster.uploaded', `Roster ${view.filename} imported: ${view.accepted} rows accepted, ${view.rejected} rejected.`, null, actor);
       return view;
     });
   }
 
-  private applyRosterRow(r: RosterRow, today: string, actor: string): string {
-    const existing = this.patientByMrn(r.mrn);
-    const e = eligibility(r, today);
+  /** Preview and import in one step with the proposed mapping (seed button and tests). */
+  uploadRoster(role: Role, filename: string, csv: string): RosterUploadView {
+    return this.tx(() => {
+      this.previewRoster(role, filename, parseCsv(csv ?? ''));
+      return this.importRoster(role);
+    });
+  }
+
+  private applyRosterRow(row: RosterRow, today: string, actor: string): string {
+    const existing = this.patientByMrn(row.mrn);
+    const r = this.assess(row, today);
+    const d = r.d;
     if (!existing) {
-      const pid = this.insertPatient(r, e.status, e.reason, null);
+      const pid = this.insertPatient(r, d.status, d.reason, null);
       let extra = '';
       if (r.consent) {
         this.insertRosterConsent(pid, r.consent);
         extra = ` Consent from the ${fmtDate(r.consent.date)} visit recorded${r.consent.automated_calls_ok ? ' (automated calls OK)' : ''}.`;
         this.log('consent.recorded', `Consent recorded from the roster: at visit on ${fmtDate(r.consent.date)}; automated calls ${r.consent.automated_calls_ok ? 'OK' : 'not OK'}; texts ${r.consent.texts_ok ? 'OK' : 'not OK'}.`, pid, actor);
       }
-      this.log('patient.added', `Added from roster: ${e.label}.${extra}`, pid, actor);
-      return `New — ${e.label}.${extra}`;
+      this.log('patient.added', `Added from roster: ${d.label}. Confidence ${d.confidence}.${extra}`, pid, actor);
+      return `New — ${d.label}.${extra}`;
     }
     const before = existing;
     this.db
       .prepare(
         `UPDATE patient SET first_name = ?, last_name = ?, dob = ?, phone = ?, state = ?, coverage = ?, is_qmb = ?,
-           qualifying_codes = ?, last_visit_date = ?, caregiver_name = ?, caregiver_phone = ?, preferred_language = ?
+           qualifying_codes = ?, sex = ?, insurance_name = ?, insurance_id = ?, diagnosis_codes = ?, confidence = ?, confidence_reasons = ?,
+           last_visit_date = ?, caregiver_name = ?, caregiver_phone = ?, preferred_language = ?
          WHERE id = ?`,
       )
       .run(
@@ -883,8 +1095,14 @@ export class Service {
         r.phone,
         r.state,
         r.coverage,
-        r.is_qmb ? 1 : 0,
-        JSON.stringify(qualifyingCodes(r.codes)),
+        r.qmb ? 1 : 0,
+        JSON.stringify(qualifyingCodes(r.codes, this.icdMatrix())),
+        r.sex,
+        r.insurance_name,
+        r.insurance_id,
+        JSON.stringify(r.codes),
+        d.confidence,
+        JSON.stringify(d.reasons),
         r.last_visit_date,
         r.caregiver_name,
         r.caregiver_phone,
@@ -898,31 +1116,41 @@ export class Service {
       if (existing.status === 'confirmed') this.setStatus(pid, 'consented', null, actor, 'consent arrived in the roster');
     }
     const status = this.patient(pid).status;
-    if (status === 'active' || status === 'consented') {
-      if (e.status !== 'eligible_unconfirmed' && e.status !== 'needs_visit') {
+    const coverageChanged = r.coverage !== before.coverage;
+    if (status === 'active' || status === 'consented' || status === 'plan_review') {
+      const program = existing.program ?? existing.proposed_program;
+      const block = program ? programBlock(program, r.coverage, d.conditions) : d.status === 'ineligible' ? d.reason : null;
+      if (block) {
         const reason =
-          r.coverage === 'advantage' && before.coverage !== 'advantage'
-            ? 'coverage changed to Medicare Advantage'
-            : r.coverage === 'advantage'
-              ? 'Medicare Advantage'
-              : 'fewer than two qualifying conditions';
+          program === 'apcm' && r.coverage === 'advantage'
+            ? `${coverageChanged ? 'coverage changed to ' : ''}Medicare Advantage: APCM not covered — switch to CCM`
+            : block;
         this.setStatus(pid, 'paused', reason, actor, reason);
         const n = this.cancelScheduled(pid, `paused, ${reason}`, actor);
+        if (program === 'apcm' && r.coverage === 'advantage' && d.conditions >= 2) {
+          this.addTaskRow(pid, { kind: 'other', title: 'Switch program to CCM', reason: `Now on ${r.insurance_name}; APCM is not covered under Medicare Advantage. Redo the call setup as CCM.`, due: nextBusinessDay(this.now()) }, actor);
+        }
         this.outbox('alert', `${STAFF.nurse.name} (queue)`, `${fullName(existing)} (${existing.mrn}) paused: ${reason}. Calls cancelled.`, pid);
         return `Paused — ${reason}; ${n} scheduled call${n === 1 ? '' : 's'} cancelled.`;
+      }
+      if (coverageChanged) {
+        this.log('patient.coverage', `Coverage changed to ${r.insurance_name}; ${program?.toUpperCase() ?? 'the program'} is still covered.`, pid, actor);
+        return `Enrolled (${program?.toUpperCase() ?? 'setup pending'}) — coverage now ${r.insurance_name}; still covered.`;
       }
       return `Enrolled (${existing.program?.toUpperCase() ?? 'setup pending'}) — no change.`;
     }
     if (status === 'eligible_unconfirmed' || status === 'confirmed' || status === 'ineligible' || status === 'needs_visit') {
-      if (e.status !== 'eligible_unconfirmed') {
-        if (status !== e.status || existing.ineligible_reason !== e.reason) this.setStatus(pid, e.status, e.reason, actor, e.label);
-        return `Existing — ${e.label}.`;
+      if (existing.ops_decision === 'rejected') return 'Existing — rejected by practice; no change.';
+      this.db.prepare('UPDATE patient SET proposed_program = ? WHERE id = ?').run(d.program, pid);
+      if (d.status !== 'eligible_unconfirmed') {
+        if (status !== d.status || existing.ineligible_reason !== d.reason) this.setStatus(pid, d.status, d.reason, actor, d.label);
+        return `Existing — ${d.label}.`;
       }
       if (status === 'ineligible' || status === 'needs_visit') {
         this.setStatus(pid, 'eligible_unconfirmed', null, actor, 'now eligible');
-        return 'Existing — now eligible, awaiting practice confirmation.';
+        return `Existing — now ${d.label}.`;
       }
-      return `Existing — ${status === 'confirmed' ? 'confirmed, no consent yet' : 'eligible, awaiting practice confirmation'}.`;
+      return `Existing — ${status === 'confirmed' ? 'approved, no consent yet' : d.label}.`;
     }
     return `Existing — ${status.replace('_', ' ')}${existing.ineligible_reason ? ` (${existing.ineligible_reason})` : ''}.`;
   }
@@ -949,21 +1177,153 @@ export class Service {
     this.log('patient.status', `Status: ${status.replace(/_/g, ' ')} — ${why}.`, pid, actor);
   }
 
+  /** The V1 confirmation step, now an Ops approval with the proposed program. */
   confirmEligibility(role: Role, pid: number): void {
+    this.need(role, ['manager'], 'confirm eligibility');
+    this.opsDecide(role, pid, 'approved');
+  }
+
+  /** Ops review of a roster row in the Opportunity Matrix: approve, hold, reject, or reopen a rejected row. */
+  opsDecide(role: Role, pid: number, decision: OpsDecision | 'reopen', program?: Program | null, note?: string): void {
     this.tx(() => {
-      const actor = this.need(role, ['manager'], 'confirm eligibility');
+      const actor = this.need(role, ['manager'], 'review the opportunity matrix');
       const p = this.patient(pid);
-      if (p.status !== 'eligible_unconfirmed') throw new UserError(`${fullName(p)} is not awaiting confirmation.`);
-      const c = this.consentOf(pid);
-      const next: PatientStatus = c && !c.revoked_at ? 'consented' : 'confirmed';
-      this.db.prepare('UPDATE patient SET status = ?, ineligible_reason = NULL WHERE id = ?').run(next, pid);
-      this.log(
-        'eligibility.confirmed',
-        `Practice confirmed eligibility. Next: ${next === 'consented' ? 'call setup (consent already on file)' : 'consent'}.`,
+      const n = (note ?? '').trim();
+      if (decision === 'reopen') {
+        if (p.ops_decision !== 'rejected') throw new UserError(`${fullName(p)} was not rejected.`);
+        this.db.prepare('UPDATE patient SET ops_decision = NULL, ops_note = NULL, ops_decided_at = NULL WHERE id = ?').run(pid);
+        this.setStatus(pid, 'eligible_unconfirmed', null, actor, 'reopened for review');
+        return;
+      }
+      if (p.status !== 'eligible_unconfirmed')
+        throw new UserError(`${fullName(p)} is not awaiting review (${p.status.replace(/_/g, ' ')}).`);
+      let chosen = p.proposed_program;
+      if (program && program !== p.proposed_program) {
+        const block = programBlock(program, p.coverage, this.conditionCount(p));
+        if (block) throw new UserError(`Cannot propose ${program.toUpperCase()} for ${fullName(p)}: ${block}.`);
+        chosen = program;
+        this.db.prepare('UPDATE patient SET proposed_program = ? WHERE id = ?').run(program, pid);
+        this.log('ops.program', `Program changed to ${program.toUpperCase()} in the opportunity matrix.`, pid, actor);
+      }
+      const now = this.now();
+      this.db.prepare('UPDATE patient SET ops_decision = ?, ops_note = ?, ops_decided_at = ? WHERE id = ?').run(decision, n || null, now, pid);
+      if (decision === 'approved') {
+        const c = this.consentOf(pid);
+        const next: PatientStatus = c && !c.revoked_at ? 'consented' : 'confirmed';
+        this.db.prepare('UPDATE patient SET status = ?, ineligible_reason = NULL WHERE id = ?').run(next, pid);
+        this.log(
+          'ops.approved',
+          `Approved in the opportunity matrix for ${chosen?.toUpperCase() ?? '—'}. Next: ${next === 'consented' ? 'call setup (consent already on file)' : 'consent'}.${n ? ` Note: ${n}` : ''}`,
+          pid,
+          actor,
+        );
+      } else if (decision === 'held') {
+        this.log('ops.held', `Held in the opportunity matrix${n ? `: ${n}` : ''}.`, pid, actor);
+      } else {
+        this.setStatus(pid, 'ineligible', `rejected by practice${n ? `: ${n}` : ''}`, actor, 'rejected in the opportunity matrix');
+      }
+    });
+  }
+
+  /** Approves every row awaiting review at or above `minConfidence`. */
+  opsApproveAll(role: Role, minConfidence: number): number {
+    return this.tx(() => {
+      this.need(role, ['manager'], 'review the opportunity matrix');
+      const rows = this.patients().filter((p) => p.status === 'eligible_unconfirmed' && p.ops_decision !== 'held' && p.confidence >= minConfidence);
+      for (const p of rows) this.opsDecide(role, p.id, 'approved');
+      return rows.length;
+    });
+  }
+
+  saveBillingSettings(role: Role, input: Partial<BillingSettings>): BillingSettings {
+    return this.tx(() => {
+      const actor = this.need(role, ['manager'], 'change billing settings');
+      const cur = this.settings();
+      const next: BillingSettings = { ...cur };
+      if (input.fees) {
+        for (const code of BILLING_CODES) {
+          const v = input.fees[code];
+          if (v == null) continue;
+          const n = Number(v);
+          if (!Number.isFinite(n) || n < 0) throw new UserError(`Fee for ${code} must be a positive amount.`);
+          next.fees = { ...next.fees, [code]: Math.round(n * 100) / 100 };
+        }
+      }
+      for (const k of ['renderingNpi', 'billingNpi'] as const) {
+        if (input[k] == null) continue;
+        const v = String(input[k]).trim();
+        if (!npiValid(v)) throw new UserError(`${k === 'renderingNpi' ? 'Rendering' : 'Billing'} NPI ${v} fails the NPI check digit (Luhn) test.`);
+        next[k] = v;
+      }
+      if (input.placeOfService != null) {
+        if (input.placeOfService !== '11' && input.placeOfService !== '12') throw new UserError('Place of service is 11 (office) or 12 (home).');
+        next.placeOfService = input.placeOfService;
+      }
+      if (input.modifier != null) {
+        const m = String(input.modifier).trim().toUpperCase();
+        if (m && !/^[A-Z0-9]{2}$/.test(m)) throw new UserError('A modifier is two letters or digits, e.g. GQ.');
+        next.modifier = m;
+      }
+      if (input.twoPlusDefault != null) {
+        if (input.twoPlusDefault !== 'ccm' && input.twoPlusDefault !== 'apcm') throw new UserError('Pick CCM or APCM.');
+        next.twoPlusDefault = input.twoPlusDefault;
+      }
+      if (input.valueBasedPayers != null) {
+        next.valueBasedPayers = input.valueBasedPayers.map((v) => String(v).trim()).filter(Boolean);
+      }
+      this.setKv('billingSettings', next);
+      this.log('settings.billing', 'Billing settings saved.', null, actor);
+      return next;
+    });
+  }
+
+  /** Consent Pending queue: text the patient a link to the consent form. Nothing is sent; it lands in the outbox. */
+  sendConsentLink(role: Role, pid: number): void {
+    this.tx(() => {
+      const actor = this.need(role, ['nurse'], 'send consent links');
+      const p = this.patient(pid);
+      if (p.status !== 'confirmed') throw new UserError(`${fullName(p)} does not need consent.`);
+      const link = `https://consent.example/westfield/${p.mrn.toLowerCase()}`;
+      this.outbox(
+        'text',
+        `${fullName(p)}, ${p.phone}`,
+        `${PRACTICE.name}: Dr. Patel's office invites you to monthly care management. Read and sign here: ${link} — or call us at ${PRACTICE.phone}.`,
         pid,
-        actor,
+      );
+      this.log('consent.link_sent', `Consent link sent by text to ${p.phone}.`, pid, actor);
+    });
+  }
+
+  /** Tester: the patient opens the link and signs (the four items are on the form). */
+  simulateConsentSigned(pid: number, input: { automatedCallsOk?: boolean; textsOk?: boolean }): void {
+    this.tx(() => {
+      const p = this.patient(pid);
+      if (p.status !== 'confirmed') throw new UserError(`${fullName(p)} does not need consent.`);
+      if (!this.events({ patientId: pid, prefix: 'consent.link_sent' }).length) throw new UserError('Send the consent link first.');
+      this.db
+        .prepare(
+          `INSERT INTO consent (patient_id, method, consent_date, captured_by, explained_availability, explained_cost_sharing,
+             explained_one_practitioner, explained_right_to_stop, automated_calls_ok, texts_ok)
+           VALUES (?, 'digital_link', ?, ?, 1, 1, 1, 1, ?, ?)`,
+        )
+        .run(pid, dateOf(this.now()), `${fullName(p)} (signed consent link)`, input.automatedCallsOk ? 1 : 0, input.textsOk ? 1 : 0);
+      this.db.prepare("UPDATE patient SET status = 'consented' WHERE id = ?").run(pid);
+      this.log(
+        'consent.recorded',
+        `Consent signed through the link: four items on the form; automated calls ${input.automatedCallsOk ? 'OK' : 'not OK'}; texts ${input.textsOk ? 'OK' : 'not OK'}.`,
+        pid,
+        TESTER,
       );
     });
+  }
+
+  /** When the nurse last tried to reach a patient about consent: a consent call or a link sent. */
+  lastConsentAttempt(pid: number): { at: string; how: string } | null {
+    const calls = this.timeOf(pid)
+      .filter((t) => t.activity === 'consent_call')
+      .map((t) => ({ at: t.started_at, how: `consent call, ${(t.outcome ?? 'no outcome').toLowerCase()}` }));
+    const links = this.events({ patientId: pid, prefix: 'consent.link_sent' }).map((e) => ({ at: e.at, how: 'consent link sent' }));
+    return [...calls, ...links].sort((a, b) => b.at.localeCompare(a.at))[0] ?? null;
   }
 
   startConsentCall(role: Role, pid: number): void {
@@ -1028,12 +1388,14 @@ export class Service {
     this.tx(() => {
       const actor = this.need(role, ['nurse'], 'fill call setup');
       const p = this.patient(pid);
-      if (p.status !== 'consented' && p.status !== 'active') throw new UserError(`${fullName(p)} is not ready for call setup.`);
+      if (!['consented', 'plan_review', 'active', 'paused'].includes(p.status)) throw new UserError(`${fullName(p)} is not ready for call setup.`);
       if (input.program !== 'ccm' && input.program !== 'apcm') throw new UserError('Pick CCM or APCM.');
+      const block = programBlock(input.program, p.coverage, this.conditionCount(p));
+      if (block) throw new UserError(`${input.program.toUpperCase()} is not available for ${fullName(p)}: ${block}.`);
       const readings = (input.readings ?? []).filter((r) => ['bp', 'glucose', 'weight', 'oxygen'].includes(r));
       const symptoms = (input.symptoms ?? []).filter((r) => r in RULES);
       const month = this.month();
-      if (p.status === 'active' && p.program && p.program !== input.program) {
+      if ((p.status === 'active' || p.status === 'paused') && p.program && p.program !== input.program) {
         const busy =
           this.timeOf(pid, month).length > 0 ||
           this.callsOf(pid).some((c) => c.status === 'done' && inMonth(c.started_at, month));
@@ -1058,14 +1420,176 @@ export class Service {
         pid,
         actor,
       );
-      if (p.status === 'consented') {
-        this.setStatus(pid, 'active', null, actor, `enrolled in ${input.program.toUpperCase()}`);
-        this.scheduleFirstContact(this.patient(pid), actor);
+      if (input.program === 'ccm') {
+        for (const t of this.tasksOf(pid).filter((t) => t.status === 'open' && t.title === 'Switch program to CCM')) {
+          this.db.prepare("UPDATE task SET status = 'done', closed_at = ?, close_note = ? WHERE id = ?").run(this.now(), 'Call setup saved as CCM', t.id);
+          this.log('task.closed', 'Task closed: Switch program to CCM — call setup saved as CCM.', pid, actor);
+        }
+      }
+      const plan = this.draftCarePlan(this.patient(pid), actor);
+      if (p.status !== 'active') {
+        if (p.status !== 'plan_review') {
+          this.setStatus(pid, 'plan_review', null, actor, `call setup done; care plan v${plan!.version} awaits physician approval`);
+        }
+        this.outbox('alert', `${STAFF.physician.name} (care plan queue)`, `Care plan v${plan!.version} for ${fullName(p)} (${p.mrn}) is ready for approval.`, pid);
       } else if (programChanged) {
         this.cancelScheduled(pid, 'program changed', actor);
         this.scheduleFirstContact(this.patient(pid), actor);
       }
     });
+  }
+
+  /**
+   * Drafts the next care plan version from what is stored now, or refreshes
+   * the open draft. For an active patient whose plan has not changed, nothing
+   * is drafted (returns null).
+   */
+  private draftCarePlan(p: Patient, actor: string): CarePlan | null {
+    const content = compileCarePlan(this, p);
+    const draft = this.draftPlan(p.id);
+    if (draft) {
+      this.db.prepare('UPDATE care_plan SET content = ?, created_at = ?, created_by = ? WHERE id = ?').run(JSON.stringify(content), this.now(), actor, draft.id);
+      this.log('care_plan.drafted', `Care plan v${draft.version} draft refreshed from the call setup.`, p.id, actor);
+      return this.carePlan(draft.id);
+    }
+    const approved = this.approvedPlan(p.id);
+    if (p.status === 'active' && approved && JSON.stringify(approved.content) === JSON.stringify(content)) return null;
+    const id = this.insertPlan(p, actor, this.now(), content);
+    const plan = this.carePlan(id);
+    this.log('care_plan.drafted', `Care plan v${plan.version} drafted for physician approval${approved ? ` (v${approved.version} stays in effect until then)` : ''}.`, p.id, actor);
+    return plan;
+  }
+
+  private insertPlan(p: Patient, by: string, at: string, content = compileCarePlan(this, p)): number {
+    const r = this.db.prepare('SELECT COALESCE(MAX(version), 0) AS v FROM care_plan WHERE patient_id = ?').get(p.id) as { v: number };
+    const info = this.db
+      .prepare("INSERT INTO care_plan (patient_id, version, content, created_at, created_by, status) VALUES (?, ?, ?, ?, ?, 'draft')")
+      .run(p.id, r.v + 1, JSON.stringify(content), at, by);
+    return Number(info.lastInsertRowid);
+  }
+
+  /** Approves a draft: chains its hash to the previous approval and supersedes the plan in effect. */
+  private signPlan(planId: number, by: string, at: string): CarePlan {
+    const plan = this.carePlan(planId);
+    const prev = this.db
+      .prepare('SELECT hash FROM care_plan WHERE patient_id = ? AND hash IS NOT NULL AND version < ? ORDER BY version DESC LIMIT 1')
+      .get(plan.patient_id, plan.version) as { hash: string } | undefined;
+    const npi = this.settings().renderingNpi;
+    const hash = approvalHash(prev?.hash ?? null, { patientId: plan.patient_id, version: plan.version, npi, approvedBy: by, approvedAt: at, content: plan.content });
+    this.db.prepare("UPDATE care_plan SET status = 'superseded' WHERE patient_id = ? AND status = 'approved'").run(plan.patient_id);
+    this.db
+      .prepare("UPDATE care_plan SET status = 'approved', approved_at = ?, approved_by = ?, approver_npi = ?, prev_hash = ?, hash = ? WHERE id = ?")
+      .run(at, by, npi, prev?.hash ?? null, hash, planId);
+    return this.carePlan(planId);
+  }
+
+  /** Queue A: "Approve & Initiate Care Program". */
+  approveCarePlan(role: Role, planId: number): CarePlan {
+    return this.tx(() => {
+      const actor = this.need(role, ['physician'], 'approve care plans');
+      const draft = this.carePlan(planId);
+      if (draft.status !== 'draft') throw new UserError(`Care plan v${draft.version} is ${draft.status}, not a draft.`);
+      const p = this.patient(draft.patient_id);
+      const plan = this.signPlan(planId, actor, this.now());
+      this.log(
+        'care_plan.approved',
+        `Care plan v${plan.version} approved by ${actor}, NPI ${plan.approver_npi}. Signature hash ${plan.hash!.slice(0, 12)}…`,
+        p.id,
+        actor,
+      );
+      if (p.status === 'plan_review') {
+        this.setStatus(p.id, 'active', null, actor, `care plan approved; ${p.program?.toUpperCase() ?? ''} program initiated`);
+        this.scheduleFirstContact(this.patient(p.id), actor);
+      }
+      return plan;
+    });
+  }
+
+  returnCarePlan(role: Role, planId: number, note: string): void {
+    this.tx(() => {
+      const actor = this.need(role, ['physician'], 'review care plans');
+      const plan = this.carePlan(planId);
+      if (plan.status !== 'draft') throw new UserError(`Care plan v${plan.version} is not a draft.`);
+      const n = (note ?? '').trim();
+      if (!n) throw new UserError('Say what should change.');
+      this.db.prepare("UPDATE care_plan SET status = 'returned', return_note = ? WHERE id = ?").run(n, planId);
+      this.addTaskRow(plan.patient_id, { kind: 'other', title: 'Care plan changes requested', reason: `${actor}: ${n}`, due: nextBusinessDay(this.now()) }, actor);
+      this.log('care_plan.returned', `Care plan v${plan.version} returned for changes: ${n}`, plan.patient_id, actor);
+    });
+  }
+
+  // ───────────────────────────── physician escalations
+
+  /** Queue B: opening an escalation starts the physician's timer. */
+  openEscalation(role: Role, taskId: number): void {
+    this.tx(() => {
+      const actor = this.need(role, ['physician'], 'review escalations');
+      const t = this.task(taskId);
+      if (t.kind !== 'physician' || t.status !== 'open') throw new UserError('That escalation is not open.');
+      this.startTimer(t.patient_id, 'practitioner_review', null, actor, 'physician', taskId);
+      this.log('escalation.opened', `Escalation opened: ${t.title.replace('Physician review requested: ', '')}. Timer started.`, t.patient_id, actor);
+    });
+  }
+
+  closeEscalation(role: Role, taskId: number, input: { outcome: string; directive?: string; complexity?: Complexity }): TimeEntry {
+    return this.tx(() => {
+      const actor = this.need(role, ['physician'], 'review escalations');
+      const t = this.task(taskId);
+      const timer = this.timer('physician');
+      if (!timer || timer.taskId !== taskId) throw new UserError('Open the escalation first.');
+      if (!ACTIVITIES.practitioner_review.outcomes.includes(input.outcome)) throw new UserError('Pick an outcome.');
+      const directive = (input.directive ?? '').trim();
+      const entry = this.stopTimer(input.outcome, undefined, 'physician');
+      this.db
+        .prepare("UPDATE task SET status = 'done', closed_at = ?, close_note = ? WHERE id = ?")
+        .run(entry.ended_at, directive || input.outcome, taskId);
+      this.log('task.closed', `Task closed: ${t.title}${directive ? ` — ${directive}` : ''}`, t.patient_id, actor, entry.ended_at);
+      if (directive) {
+        this.addTaskRow(t.patient_id, { kind: 'followup', title: `Physician directive: ${directive}`, reason: `From ${actor}'s escalation review`, due: nextBusinessDay(entry.ended_at) }, actor, null, entry.ended_at);
+      }
+      if (input.complexity) this.writeComplexity(t.patient_id, input.complexity, actor);
+      this.log('escalation.closed', `Escalation reviewed in ${fmtDuration(entry.seconds)} (counted): ${input.outcome}.`, t.patient_id, actor, entry.ended_at);
+      return entry;
+    });
+  }
+
+  discardPhysicianTimer(role: Role): void {
+    this.tx(() => {
+      const actor = this.need(role, ['physician'], 'discard a timer');
+      const t = this.timer('physician');
+      if (!t) throw new UserError('No timer is running.');
+      this.setTimer('physician', null);
+      this.log('time.discarded', `${ACTIVITIES[t.activity].label} timer discarded; no time logged.`, t.patientId, actor);
+    });
+  }
+
+  /** The physician marks this month's medical decision making as moderate/high (complex CCM) or standard. */
+  setComplexity(role: Role, pid: number, complexity: Complexity): void {
+    this.tx(() => {
+      const actor = this.need(role, ['physician'], 'mark complexity');
+      if (complexity !== 'standard' && complexity !== 'complex') throw new UserError('Complexity is standard or complex.');
+      this.writeComplexity(pid, complexity, actor);
+    });
+  }
+
+  private writeComplexity(pid: number, complexity: Complexity, actor: string): void {
+    const p = this.patient(pid);
+    if (p.program !== 'ccm') throw new UserError('Complexity applies to CCM patients only.');
+    const month = this.month();
+    if (!this.monthCloseOf(pid, month)) {
+      this.db.prepare("INSERT INTO month_close (patient_id, month, billing_status) VALUES (?, ?, 'held')").run(pid, month);
+    }
+    this.db
+      .prepare('UPDATE month_close SET complexity = ?, complexity_by = ?, complexity_at = ? WHERE patient_id = ? AND month = ?')
+      .run(complexity, actor, this.now(), pid, month);
+    this.log(
+      'billing.complexity',
+      complexity === 'complex'
+        ? 'Medical decision making marked moderate/high for this month: complex CCM (99487) applies at 60 minutes.'
+        : 'Medical decision making marked standard for this month: CCM codes apply.',
+      pid,
+      actor,
+    );
   }
 
   private scheduleFirstContact(p: Patient, actor: string): void {
@@ -1087,29 +1611,30 @@ export class Service {
 
   // ───────────────────────────── timers and time capture
 
-  private startTimer(pid: number, activity: ActivityKey, callId: number | null, user: string): void {
-    const running = this.timer();
+  private startTimer(pid: number, activity: ActivityKey, callId: number | null, user: string, slot: TimerSlot = 'nurse', taskId: number | null = null): void {
+    const running = this.timer(slot);
     if (running) {
       const who = running.patientId === pid ? '' : ` for ${fullName(this.patient(running.patientId))}`;
       throw new UserError(`Stop the running timer (${ACTIVITIES[running.activity].label}${who}) first.`);
     }
-    const t: Timer = { patientId: pid, activity, callId, startedAt: this.now(), startedReal: this.realNow(), speed: this.speed(), user };
-    this.setKv('timer', t);
+    const t: Timer = { patientId: pid, activity, callId, taskId, startedAt: this.now(), startedReal: this.realNow(), speed: this.speed(), user };
+    this.setTimer(slot, t);
   }
 
   /** Stops the timer; stores exact seconds and moves the demo clock to the end of the work. */
-  private stopTimer(outcome: string | null, counts?: boolean): TimeEntry {
-    const t = this.timer();
+  private stopTimer(outcome: string | null, counts?: boolean, slot: TimerSlot = 'nurse'): TimeEntry {
+    const t = this.timer(slot);
     if (!t) throw new UserError('No timer is running.');
     const seconds = Math.max(0, Math.round(((this.realNow() - t.startedReal) / 1000) * t.speed));
     const ended = toIso(toMs(t.startedAt) + seconds * 1000);
     const c = counts ?? ACTIVITIES[t.activity].counts;
     const info = this.db
       .prepare(
-        'INSERT INTO time_entry (patient_id, user, activity, outcome, started_at, ended_at, seconds, counts, call_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        `INSERT INTO time_entry (patient_id, user, activity, outcome, started_at, ended_at, seconds, counts, call_id, role, task_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(t.patientId, t.user, t.activity, outcome, t.startedAt, ended, seconds, c ? 1 : 0, t.callId);
-    this.setKv('timer', null);
+      .run(t.patientId, t.user, t.activity, outcome, t.startedAt, ended, seconds, c ? 1 : 0, t.callId, slot, t.taskId ?? null);
+    this.setTimer(slot, null);
     this.advanceTo(toMs(ended));
     this.log(
       'time.logged',
@@ -1127,7 +1652,7 @@ export class Service {
       const actor = this.need(role, ['nurse'], 'log work');
       const p = this.patient(pid);
       if (!ACTIVITIES[activity]?.manual) throw new UserError('Pick a review or activity to time.');
-      if (!['active', 'opted_out', 'paused', 'consented'].includes(p.status))
+      if (!['active', 'opted_out', 'paused', 'consented', 'plan_review'].includes(p.status))
         throw new UserError(`${fullName(p)} is not enrolled, so there is no care management time to log.`);
       this.startTimer(pid, activity, null, actor);
       this.log('time.started', `${ACTIVITIES[activity].label} started${ACTIVITIES[activity].ehr ? ' (working in EHR)' : ''}.`, pid, actor);
@@ -1155,7 +1680,7 @@ export class Service {
       const t = this.timer();
       if (!t) throw new UserError('No timer is running.');
       if (t.activity === 'nurse_call') throw new UserError('End the call from the call screen.');
-      this.setKv('timer', null);
+      this.setTimer('nurse', null);
       this.log('time.discarded', `${ACTIVITIES[t.activity].label} timer discarded; no time logged.`, t.patientId, actor);
     });
   }

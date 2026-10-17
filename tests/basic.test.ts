@@ -28,27 +28,35 @@ function setup() {
   return { svc, tick, pid, work, nurseCall };
 }
 
-test('roster upload flags eligibility and pauses the patient who moved to Medicare Advantage', () => {
+test('roster upload determines programs: one condition is APCM Level 1, Medicare Advantage is CCM', () => {
   const { svc } = setup();
   svc.uploadRoster('manager', 'october-roster.csv', svc.rosterCsv());
   const s = (m: string) => svc.patientByMrn(m)!;
-  assert.equal(s('W11').status, 'ineligible');
-  assert.equal(s('W11').ineligible_reason, 'one qualifying condition');
+  assert.equal(s('W11').status, 'eligible_unconfirmed');
+  assert.equal(s('W11').proposed_program, 'apcm');
   assert.equal(s('W12').status, 'needs_visit');
   assert.equal(s('W12').ineligible_reason, 'needs a visit, last seen 14 Aug 2025');
-  assert.equal(s('W13').ineligible_reason, 'Medicare Advantage');
-  assert.equal(s('W15').status, 'paused');
-  assert.equal(s('W15').ineligible_reason, 'coverage changed to Medicare Advantage');
+  assert.equal(s('W13').status, 'eligible_unconfirmed');
+  assert.equal(s('W13').coverage, 'advantage');
+  assert.equal(s('W13').proposed_program, 'ccm');
+  // W15 is a CCM patient who moved to a Medicare Advantage plan: CCM is still covered.
+  assert.equal(s('W15').status, 'active');
+  assert.equal(s('W15').coverage, 'advantage');
+  assert.ok(svc.events({ patientId: s('W15').id, prefix: 'patient.coverage' }).length);
   assert.equal(s('W08').status, 'eligible_unconfirmed');
   assert.equal(s('W09').status, 'eligible_unconfirmed');
+  // Codes written without the decimal point are repaired.
+  assert.deepEqual(s('W05').diagnosis_codes, ['E11.9', 'E78.5']);
 });
 
 test('roster rows with bad data are rejected with a reason', () => {
   const { svc } = setup();
   const up = svc.uploadRoster('manager', 'bad.csv', svc.rosterCsv('roster-with-errors.csv'));
-  assert.equal(up.accepted, 1);
-  assert.equal(up.rejected, 5);
+  assert.equal(up.accepted, 2);
+  assert.equal(up.rejected, 4);
   assert.ok(up.rows.some((r) => r.errors.some((e) => e.includes('555-01XX'))));
+  // A Medicaid-only patient is accepted but not eligible.
+  assert.equal(svc.patientByMrn('W19')!.status, 'ineligible');
 });
 
 test('only the practice manager confirms eligibility', () => {
@@ -62,6 +70,7 @@ test('October AI run produces the scripted outcomes', () => {
   svc.uploadRoster('manager', 'r.csv', svc.rosterCsv());
   svc.confirmEligibility('manager', pid('W08'));
   svc.saveCallSetup('nurse', pid('W08'), { program: 'apcm', readings: ['bp', 'glucose'], symptoms: ['chest_pain', 'stroke_signs', 'low_glucose_spells'] });
+  svc.approveCarePlan('physician', svc.draftPlan(pid('W08'))!.id);
   svc.runAiCalls();
   const flags = (m: string) => svc.flagsOf(pid(m));
   assert.equal(flags('W01')[0].level, 'urgent');
@@ -99,6 +108,7 @@ test('time is floored to minutes, AI and unanswered calls never count, and the m
   svc.confirmEligibility('manager', pid('W08'));
   svc.confirmEligibility('manager', pid('W09'));
   svc.saveCallSetup('nurse', pid('W08'), { program: 'apcm', readings: ['bp', 'glucose'], symptoms: ['chest_pain'] });
+  svc.approveCarePlan('physician', svc.draftPlan(pid('W08'))!.id);
   svc.runAiCalls();
 
   // W01 urgent: acknowledge, nurse call, resolve.
@@ -134,6 +144,7 @@ test('time is floored to minutes, AI and unanswered calls never count, and the m
     explainedOnePractitioner: true, explainedRightToStop: true, automatedCallsOk: true, textsOk: false,
   });
   svc.saveCallSetup('nurse', pid('W09'), { program: 'ccm', readings: ['bp'], symptoms: ['chest_pain'] });
+  svc.approveCarePlan('physician', svc.draftPlan(pid('W09'))!.id);
   svc.setDate('2026-10-27');
   nurseCall('W09', 10);
 
@@ -162,7 +173,7 @@ test('time is floored to minutes, AI and unanswered calls never count, and the m
   assert.equal(status('W09').reason, 'under 20 minutes (10)');
   assert.equal(status('W07').reason, 'no completed contact');
   assert.equal(status('W14').reason, 'opted out, no service');
-  assert.equal(status('W15').reason, 'paused, now Medicare Advantage');
+  assert.equal(status('W15').reason, 'under 20 minutes (0)');
   for (const m of ['W11', 'W12', 'W13']) assert.equal(status(m).status, 'not_enrolled');
   assert.equal(s.billing.readyCount, 7);
   assert.equal(s.billing.readyTotal, 591.54);

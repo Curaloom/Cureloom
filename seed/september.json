@@ -1,5 +1,5 @@
 {
-  "_about": "Patients marked active in the October roster, as they stood after enrolling in September: program, consent, call setup, September's monthly call, and their October call schedule. Demographics come from seed/october-roster.csv; 'september_overrides' holds fields that changed in October (W15 moved to Medicare Advantage).",
+  "_about": "Patients marked active in the October roster, as they stood after enrolling in September: program, consent, call setup, September's monthly call, and their October call schedule. Demographics come from seed/october-roster.csv; 'september_overrides' holds fields that changed in October (W15 moved from Medicare Part B to a Medicare Advantage plan).",
   "active": [
     {
       "mrn": "W01",
@@ -121,7 +121,7 @@
     {
       "mrn": "W15",
       "program": "ccm",
-      "september_overrides": { "coverage": "traditional" },
+      "september_overrides": { "insurance_name": "Medicare Part B", "insurance_id": "2LP8-RT5-KM90" },
       "consent": { "method": "at_visit", "consent_date": "2026-09-03", "automated_calls_ok": false, "texts_ok": false },
       "call_setup": {
         "readings": ["bp", "glucose"],

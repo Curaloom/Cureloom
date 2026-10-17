@@ -11,6 +11,7 @@ const STATUS_TONE: Record<PatientStatus, string> = {
   eligible_unconfirmed: 'info',
   confirmed: 'info',
   consented: 'info',
+  plan_review: 'info',
   active: 'ok',
   ineligible: 'neutral',
   needs_visit: 'warn',
@@ -19,9 +20,10 @@ const STATUS_TONE: Record<PatientStatus, string> = {
 };
 
 const STATUS_LABEL: Record<PatientStatus, string> = {
-  eligible_unconfirmed: 'Eligible, awaiting confirmation',
-  confirmed: 'Confirmed, no consent',
+  eligible_unconfirmed: 'Eligible, awaiting Ops review',
+  confirmed: 'Approved, no consent',
   consented: 'Consented, no call setup',
+  plan_review: 'Awaiting care plan approval',
   active: 'Active',
   ineligible: 'Not eligible',
   needs_visit: 'Needs a visit',
