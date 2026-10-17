@@ -1,124 +1,193 @@
-import { useState } from 'react';
+import { useState, type ReactElement } from 'react';
+import { UserPlus } from 'lucide-react';
 import type { EnrollBucket, PatientView } from '../../shared/api';
 import { fmtDate } from '../../shared/time';
+import { StatusBadge, ToneBadge } from '@/components/app/badges';
+import { EmptyState } from '@/components/app/empty-state';
+import { InfoTip } from '@/components/app/info-tip';
+import { PageHeader } from '@/components/app/page-header';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useStore } from '../store';
-import { Badge, Card, Empty, StatusBadge } from '../ui';
 import { ConsentModal } from './ConsentModal';
 import { SetupModal } from './SetupModal';
 
-const SECTIONS: { bucket: EnrollBucket; title: string; help: string }[] = [
-  {
-    bucket: 'awaiting_confirmation',
-    title: 'Eligible — awaiting Ops review',
-    help: 'The roster determination proposes CCM or an APCM tier from the payer and the chronic ICD-10 codes. Ops approves, holds or rejects each row in the opportunity matrix.',
-  },
-  { bucket: 'needs_consent', title: 'Approved — no consent yet', help: 'Consent is usually taken at the office visit and arrives in the roster. Otherwise the nurse sends a consent link or calls with the script on screen.' },
-  { bucket: 'needs_setup', title: 'Consented — no call setup yet', help: 'Pick the readings to ask, the symptoms to watch, the last EHR care plan review date, and the program. Saving compiles the care plan.' },
-  { bucket: 'needs_care_plan', title: 'Call setup done — care plan awaiting physician approval', help: 'No calls are scheduled until the physician approves the care plan.' },
-  { bucket: 'not_eligible', title: 'Not eligible', help: '' },
-  { bucket: 'stopped', title: 'Paused or opted out', help: '' },
+const SECTIONS: { bucket: EnrollBucket; title: string }[] = [
+  { bucket: 'awaiting_confirmation', title: 'Awaiting Ops review' },
+  { bucket: 'needs_consent', title: 'Needs consent' },
+  { bucket: 'needs_setup', title: 'Needs call setup' },
+  { bucket: 'needs_care_plan', title: 'Care plan with physician' },
+  { bucket: 'not_eligible', title: 'Not eligible' },
+  { bucket: 'stopped', title: 'Paused or opted out' },
 ];
 
+/** Edge-to-edge table inside a card: the outer columns get the card's inset. */
+const EDGE = '[&_td:first-child]:pl-4 [&_td:last-child]:pr-4 [&_th:first-child]:pl-4 [&_th:last-child]:pr-4';
+
+/** A disabled control with a tooltip naming why; renders the control as is when `reason` is null. */
+function Gate({ reason, children }: { reason: string | null; children: ReactElement }) {
+  if (!reason) return children;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span tabIndex={0} className="inline-flex rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          {children}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{reason}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function Enroll() {
-  const { state, role } = useStore();
+  const { state, role, act } = useStore();
   const [consentFor, setConsentFor] = useState<number | null>(null);
   const [setupFor, setSetupFor] = useState<number | null>(null);
   const by = (b: EnrollBucket) => state.patients.filter((p) => p.enrollBucket === b);
+  const [tab, setTab] = useState<string>(() => (SECTIONS.find((s) => by(s.bucket).length) ?? SECTIONS[0]).bucket);
+  const nurseOnly = role === 'nurse' ? null : 'Nurse only';
 
   function action(p: PatientView) {
     switch (p.enrollBucket) {
       case 'awaiting_confirmation':
-        return role === 'manager' ? (
-          <a className="btn btn-primary btn-small" href="#/roster">
-            Review in the matrix
-          </a>
-        ) : (
-          <span className="hint">Ops reviews in the opportunity matrix</span>
+        return (
+          <Button size="sm" variant="outline" asChild>
+            <a href="#/roster">Review in the matrix</a>
+          </Button>
         );
       case 'needs_care_plan':
-        return role === 'physician' ? (
-          <a className="btn btn-primary btn-small" href="#/physician">
-            Review care plan
-          </a>
+        return p.draftPlan ? (
+          <Button size="sm" variant="outline" asChild>
+            <a href="#/physician">Care plan v{p.draftPlan.version}</a>
+          </Button>
         ) : (
-          <span className="hint">{p.draftPlan ? `v${p.draftPlan.version} with the physician` : 'Returned: update the call setup'}</span>
+          <Gate reason={nurseOnly}>
+            <Button size="sm" disabled={role !== 'nurse'} onClick={() => setSetupFor(p.id)}>
+              Plan returned: edit setup
+            </Button>
+          </Gate>
         );
       case 'needs_consent':
         return (
-          <button className="btn btn-primary btn-small" disabled={role !== 'nurse'} onClick={() => setConsentFor(p.id)}>
-            Open consent script
-          </button>
+          <Gate reason={nurseOnly}>
+            <Button size="sm" disabled={role !== 'nurse'} onClick={() => setConsentFor(p.id)}>
+              Open consent script
+            </Button>
+          </Gate>
         );
       case 'needs_setup':
         return (
-          <button className="btn btn-primary btn-small" disabled={role !== 'nurse'} onClick={() => setSetupFor(p.id)}>
-            Fill call setup
-          </button>
+          <Gate reason={nurseOnly}>
+            <Button size="sm" disabled={role !== 'nurse'} onClick={() => setSetupFor(p.id)}>
+              Fill call setup
+            </Button>
+          </Gate>
         );
       default:
-        return <span className="muted">{p.ineligible_reason ?? (p.status === 'opted_out' ? 'opted out' : '')}</span>;
+        return null;
     }
   }
 
   return (
-    <div className="stack">
-      <div className="page-head">
-        <h1>Enroll</h1>
-        <p className="muted">New patients move through Ops review, consent, call setup and physician care plan approval. Active patients are on the Today queue.</p>
-      </div>
-      {SECTIONS.map((s) => {
-        const list = by(s.bucket);
-        return (
-          <Card key={s.bucket} title={`${s.title} (${list.length})`}>
-            {s.help && <p className="muted small">{s.help}</p>}
-            {!list.length ? (
-              <Empty>Nobody here.</Empty>
-            ) : (
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Patient</th>
-                    <th>Conditions</th>
-                    <th>Payer</th>
-                    <th>Last visit</th>
-                    <th>{s.bucket === 'needs_setup' ? 'Consent' : 'Status'}</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {list.map((p) => (
-                    <tr key={p.id}>
-                      <td>
-                        <a href={`#/patient/${p.id}`}>{p.name}</a>
-                        <div className="muted small">
-                          {p.mrn} · {p.age}
-                        </div>
-                      </td>
-                      <td className="small">{p.codes.map((c) => c.code).join(', ') || '—'}</td>
-                      <td className="small">
-                        {p.payerLabel}
-                        {p.is_qmb && !/QMB/.test(p.payerLabel) && <Badge tone="info">QMB</Badge>}
-                      </td>
-                      <td>{fmtDate(p.last_visit_date)}</td>
-                      <td className="small">
-                        {s.bucket === 'needs_setup' && p.consent ? (
-                          <>
-                            {p.consent.method === 'at_visit' ? 'At visit' : 'Nurse phone'}, {fmtDate(p.consent.consent_date)}
-                            <div className="muted">Automated calls {p.consent.automated_calls_ok ? 'OK' : 'not OK'}</div>
-                          </>
-                        ) : (
-                          <StatusBadge status={p.status} />
-                        )}
-                      </td>
-                      <td className="right">{action(p)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </Card>
-        );
-      })}
+    <div className="flex flex-col gap-4">
+      <PageHeader title="Enroll" />
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList className="max-w-full flex-wrap justify-start group-data-[orientation=horizontal]/tabs:h-auto">
+          {SECTIONS.map((s) => (
+            <TabsTrigger key={s.bucket} value={s.bucket} className="px-3 py-1">
+              {s.title}
+              <ToneBadge tone="neutral" className="h-5 min-w-5 px-1.5 tabular-nums">
+                {by(s.bucket).length}
+              </ToneBadge>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        {SECTIONS.map((s) => {
+          const list = by(s.bucket);
+          const actionable = ['awaiting_confirmation', 'needs_consent', 'needs_setup', 'needs_care_plan'].includes(s.bucket);
+          return (
+            <TabsContent key={s.bucket} value={s.bucket}>
+              <Card className="gap-0 overflow-hidden py-0">
+                <CardContent className="p-0">
+                  {!list.length ? (
+                    <EmptyState icon={<UserPlus />} title="Nobody here" />
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <Table className={EDGE}>
+                        <TableHeader>
+                          <TableRow className="hover:bg-transparent">
+                            <TableHead className="text-muted-foreground">Patient</TableHead>
+                            <TableHead className="text-muted-foreground">Conditions</TableHead>
+                            <TableHead className="text-muted-foreground">Payer</TableHead>
+                            <TableHead className="text-muted-foreground">Last visit</TableHead>
+                            <TableHead className="text-muted-foreground">
+                              {s.bucket === 'needs_setup' ? (
+                                'Consent'
+                              ) : s.bucket === 'awaiting_confirmation' ? (
+                                <span className="inline-flex items-center gap-1.5">
+                                  Status
+                                  <InfoTip>Proposed from the payer and chronic ICD-10 codes; Ops approves in the opportunity matrix</InfoTip>
+                                </span>
+                              ) : (
+                                'Status'
+                              )}
+                            </TableHead>
+                            {actionable && (
+                              <TableHead>
+                                <span className="sr-only">Action</span>
+                              </TableHead>
+                            )}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {list.map((p) => (
+                            <TableRow key={p.id}>
+                              <TableCell>
+                                <a href={`#/patient/${p.id}`} className="font-medium hover:underline">
+                                  {p.name}
+                                </a>
+                                <div className="text-xs text-muted-foreground">
+                                  <span className="font-mono">{p.mrn}</span> · {p.age}
+                                </div>
+                              </TableCell>
+                              <TableCell className="font-mono text-xs">{p.codes.map((c) => c.code).join(', ') || '—'}</TableCell>
+                              <TableCell>
+                                <span className="inline-flex items-center gap-1.5 text-sm">
+                                  {p.payerLabel}
+                                  {p.is_qmb && !/QMB/.test(p.payerLabel) && <ToneBadge tone="info">QMB</ToneBadge>}
+                                </span>
+                              </TableCell>
+                              <TableCell className="tabular-nums">{fmtDate(p.last_visit_date)}</TableCell>
+                              <TableCell>
+                                {s.bucket === 'needs_setup' && p.consent ? (
+                                  <>
+                                    {p.consent.method === 'at_visit' ? 'At visit' : p.consent.method === 'digital_link' ? 'Signed link' : 'Nurse phone'},{' '}
+                                    {fmtDate(p.consent.consent_date)}
+                                    <div className="text-xs text-muted-foreground">Automated calls {p.consent.automated_calls_ok ? 'OK' : 'not OK'}</div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <StatusBadge status={p.status} />
+                                    {!actionable && p.ineligible_reason && <div className="mt-1 text-xs text-muted-foreground">{p.ineligible_reason}</div>}
+                                  </>
+                                )}
+                              </TableCell>
+                              {actionable && <TableCell className="text-right">{action(p)}</TableCell>}
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          );
+        })}
+      </Tabs>
       {consentFor != null && <ConsentModal patientId={consentFor} onClose={() => setConsentFor(null)} />}
       {setupFor != null && <SetupModal patientId={setupFor} onClose={() => setSetupFor(null)} />}
     </div>

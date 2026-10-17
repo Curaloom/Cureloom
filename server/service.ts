@@ -700,10 +700,10 @@ export class Service {
     this.db.prepare('ATTACH DATABASE ? AS cp').run(this.checkpointPath);
     try {
       this.db.transaction(() => {
-        for (const t of TABLES) {
-          this.db.prepare(`DELETE FROM main.${t}`).run();
-          this.db.prepare(`INSERT INTO main.${t} SELECT * FROM cp.${t}`).run();
-        }
+        // Clear children before parents, then refill parents before children,
+        // so no foreign key is ever dangling.
+        for (const t of TABLES) this.db.prepare(`DELETE FROM main.${t}`).run();
+        for (const t of [...TABLES].reverse()) this.db.prepare(`INSERT INTO main.${t} SELECT * FROM cp.${t}`).run();
         this.setNow(toMs(info.demoAt!));
         this.setTimer('nurse', null);
         this.setTimer('physician', null);
